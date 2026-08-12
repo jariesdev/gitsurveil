@@ -1,1 +1,6 @@
 /target
+node_modules
+/dist
+
+# Tauri's generated schemas/capabilities output
+crates/gitsurveil-app/gen

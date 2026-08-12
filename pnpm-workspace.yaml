@@ -1,0 +1,10 @@
+# Declares this directory as its own pnpm workspace root.
+#
+# Without this, pnpm walks up the filesystem looking for a workspace root and
+# finds one in the user's home directory, which silently skips installing this
+# project's dependencies.
+packages:
+  - '.'
+allowBuilds:
+  # Vite's bundler; its postinstall fetches the platform-native binary.
+  esbuild: true
