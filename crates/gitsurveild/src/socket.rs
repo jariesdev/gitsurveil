@@ -1,8 +1,8 @@
 //! The local API server (`specs/daemon.md`): newline-delimited JSON over a
 //! unix domain socket (macOS/Linux) or a named pipe (Windows). Phase 1
-//! implements `status`, `items.list`, and `accounts.{add,list}` (PAT auth
-//! only — OAuth device flow is Phase 5); later phases add more `match` arms
-//! to [`dispatch`] without touching the transport code.
+//! Implements `status`, `items.{list,history,dismiss,undismiss}`,
+//! `accounts.{add,list,remove}`, `rules.list`, and `poll.now`. Later phases
+//! add more `match` arms to [`dispatch`] without touching the transport code.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -36,6 +36,31 @@ pub struct ServerState {
 #[derive(Debug, Default, Deserialize)]
 struct ItemsListParams {}
 
+/// Params for `items.history`.
+#[derive(Debug, Deserialize)]
+struct HistoryParams {
+    /// Cap on rows returned; the store keeps far more than a UI should render
+    /// at once.
+    #[serde(default = "default_history_limit")]
+    limit: usize,
+}
+
+fn default_history_limit() -> usize {
+    200
+}
+
+/// Params for methods that address a single item.
+#[derive(Debug, Deserialize)]
+struct ItemIdParams {
+    id: String,
+}
+
+/// Params for `accounts.remove`.
+#[derive(Debug, Deserialize)]
+struct AccountIdParams {
+    id: String,
+}
+
 /// Params for `accounts.add`. `api_base` defaults to the public GitHub API;
 /// set it for GitHub Enterprise (`specs/github-integration.md`).
 #[derive(Debug, Deserialize)]
@@ -54,8 +79,14 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
     let result = match req.method.as_str() {
         "status" => handle_status(state),
         "items.list" => handle_items_list(state, req.params),
+        "items.history" => handle_items_history(state, req.params),
+        "items.dismiss" => handle_items_set_dismissed(state, req.params, true),
+        "items.undismiss" => handle_items_set_dismissed(state, req.params, false),
         "accounts.list" => handle_accounts_list(state),
         "accounts.add" => handle_accounts_add(state, req.params).await,
+        "accounts.remove" => handle_accounts_remove(state, req.params),
+        "rules.list" => handle_rules_list(state),
+        "poll.now" => handle_poll_now(state).await,
         other => Err(DaemonError::UnknownMethod(other.to_string())),
     };
     match result {
@@ -97,6 +128,56 @@ fn handle_items_list(state: &ServerState, params: serde_json::Value) -> Result<s
     // same order without reimplementing the comparison.
     let scored = priority::score_all(&items, &state.rules, Utc::now());
     Ok(serde_json::to_value(scored).expect("Vec<ScoredItem> always serializes"))
+}
+
+fn handle_items_history(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: HistoryParams = if params.is_null() {
+        HistoryParams { limit: default_history_limit() }
+    } else {
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?
+    };
+    let items = state.store.history_items(params.limit)?;
+    // Scored like anything else so history rows render with the same badges
+    // as live ones, rather than needing a second, subtly different row widget.
+    let scored = priority::score_all(&items, &state.rules, Utc::now());
+    Ok(serde_json::to_value(scored).expect("Vec<ScoredItem> always serializes"))
+}
+
+fn handle_items_set_dismissed(
+    state: &ServerState,
+    params: serde_json::Value,
+    dismissed: bool,
+) -> Result<serde_json::Value> {
+    let params: ItemIdParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    state.store.set_dismissed(&params.id, dismissed)?;
+    Ok(serde_json::Value::Null)
+}
+
+/// Removes the account row *and* its keychain token. Order matters: the row
+/// goes last, so a keychain failure can't leave a token behind with no
+/// account referencing it.
+fn handle_accounts_remove(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: AccountIdParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    keychain::delete_token(&params.id)?;
+    state.store.remove_account(&params.id)?;
+    Ok(serde_json::Value::Null)
+}
+
+/// Forces a poll cycle now. Runs inline on the caller's connection, so the
+/// response only comes back once the poll has finished and the client can
+/// refresh immediately afterwards and see the result.
+async fn handle_poll_now(state: &ServerState) -> Result<serde_json::Value> {
+    crate::poller::poll_all_accounts(&state.store, &state.rules).await;
+    Ok(serde_json::Value::Null)
+}
+
+/// Read-only for now: the graphical rule editor writes through a `rules.set`
+/// method that lands with config hot-reloading. Listing them already lets the
+/// UI explain *why* an item scored the way it did.
+fn handle_rules_list(state: &ServerState) -> Result<serde_json::Value> {
+    Ok(serde_json::to_value(&state.rules).expect("Vec<Rule> always serializes"))
 }
 
 fn handle_accounts_list(state: &ServerState) -> Result<serde_json::Value> {
@@ -341,6 +422,84 @@ mod tests {
         .await;
         let items = resp.result.unwrap();
         assert_eq!(items, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn history_excludes_open_items() {
+        let state = test_state();
+        state.store.upsert_account(&AccountRef {
+            id: "acc-1".into(),
+            host: "github.com".into(),
+            api_base: "https://api.github.com".into(),
+            login: "octocat".into(),
+            auth_kind: AuthKind::Pat,
+        }).unwrap();
+        let item = gitsurveil_proto::ActionItem {
+            id: "i1".into(),
+            account_id: "acc-1".into(),
+            kind: gitsurveil_proto::ItemKind::Assigned,
+            state: gitsurveil_proto::ItemState::Open,
+            repo: "acme/api".into(),
+            number: Some(1),
+            title: "t".into(),
+            url: "u".into(),
+            author: "a".into(),
+            created_at: "2026-08-13T12:00:00Z".into(),
+            updated_at: "2026-08-13T12:00:00Z".into(),
+            first_seen_at: "2026-08-13T12:00:00Z".into(),
+            last_seen_at: "2026-08-13T12:00:00Z".into(),
+            ci_status: gitsurveil_proto::CiStatus::None,
+            raw_kind: "assign".into(),
+        };
+        state.store.upsert_item(&item).unwrap();
+
+        let history = |state: &ServerState| {
+            handle_items_history(state, serde_json::Value::Null)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len()
+        };
+        assert_eq!(history(&state), 0, "an open item is not history");
+
+        state.store.mark_item_done("i1").unwrap();
+        assert_eq!(history(&state), 1, "a resolved item is");
+    }
+
+    #[tokio::test]
+    async fn dismiss_and_undismiss_move_an_item_out_of_and_back_into_the_list() {
+        let state = test_state();
+        state.store.upsert_account(&AccountRef {
+            id: "acc-1".into(),
+            host: "github.com".into(),
+            api_base: "https://api.github.com".into(),
+            login: "octocat".into(),
+            auth_kind: AuthKind::Pat,
+        }).unwrap();
+        state.store.upsert_item(&gitsurveil_proto::ActionItem {
+            id: "i1".into(),
+            account_id: "acc-1".into(),
+            kind: gitsurveil_proto::ItemKind::Assigned,
+            state: gitsurveil_proto::ItemState::Open,
+            repo: "acme/api".into(),
+            number: Some(1),
+            title: "t".into(),
+            url: "u".into(),
+            author: "a".into(),
+            created_at: "2026-08-13T12:00:00Z".into(),
+            updated_at: "2026-08-13T12:00:00Z".into(),
+            first_seen_at: "2026-08-13T12:00:00Z".into(),
+            last_seen_at: "2026-08-13T12:00:00Z".into(),
+            ci_status: gitsurveil_proto::CiStatus::None,
+            raw_kind: "assign".into(),
+        }).unwrap();
+
+        let params = serde_json::json!({ "id": "i1" });
+        handle_items_set_dismissed(&state, params.clone(), true).unwrap();
+        assert!(state.store.open_items().unwrap().is_empty());
+
+        handle_items_set_dismissed(&state, params, false).unwrap();
+        assert_eq!(state.store.open_items().unwrap().len(), 1);
     }
 
     #[tokio::test]

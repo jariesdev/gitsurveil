@@ -31,6 +31,14 @@ const POPOVER_LABEL: &str = "popover";
 /// Id of the tray icon, so the severity watcher can find it to recolor.
 const TRAY_ID: &str = "main";
 
+/// Label of the main desktop window (`specs/desktop-ui.md`).
+const MAIN_LABEL: &str = "main";
+
+/// Main window dimensions — big enough for the dashboard's two-column layout
+/// without assuming a large display.
+const MAIN_WIDTH: f64 = 1000.0;
+const MAIN_HEIGHT: f64 = 680.0;
+
 /// Popover dimensions. Sized for a scannable list without becoming a second
 /// main window — the full UI is a separate surface (`specs/desktop-ui.md`).
 const POPOVER_WIDTH: f64 = 400.0;
@@ -45,6 +53,15 @@ fn main() {
             commands::daemon_status,
             commands::open_url,
             commands::close_popover,
+            commands::open_main_window,
+            commands::list_history,
+            commands::dismiss_item,
+            commands::undismiss_item,
+            commands::add_account,
+            commands::remove_account,
+            commands::list_accounts,
+            commands::list_rules,
+            commands::poll_now,
         ])
         .setup(|app| {
             // Menubar app, not a dock app: no dock icon, no app-switcher
@@ -94,9 +111,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "quit" => app.exit(0),
             "open_full_ui" => {
-                // The full desktop UI is Phase 5; until it exists this at
-                // least surfaces the same list rather than doing nothing.
-                let _ = toggle_popover(app);
+                let _ = open_main(app);
             }
             _ => {}
         })
@@ -165,11 +180,46 @@ fn toggle_popover(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Opens the full desktop window, focusing it if it already exists.
+///
+/// Unlike the popover this is an ordinary window: it stays where the user put
+/// it, appears in the app switcher, and does not vanish on blur. Its webview
+/// is still dropped when the window closes, so a closed main window costs
+/// nothing.
+fn open_main(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if let Some(existing) = app.get_webview_window(MAIN_LABEL) {
+        existing.show()?;
+        existing.unminimize().ok();
+        existing.set_focus()?;
+        return Ok(());
+    }
+
+    // `#main` routes the shared bundle to the desktop UI; the popover loads
+    // the same index.html with no fragment.
+    let window = WebviewWindowBuilder::new(app, MAIN_LABEL, WebviewUrl::App("index.html#main".into()))
+        .title("gitsurveil")
+        .inner_size(MAIN_WIDTH, MAIN_HEIGHT)
+        .min_inner_size(760.0, 520.0)
+        .resizable(true)
+        .build()?;
+
+    // The app runs as an accessory (no dock icon) for the tray's sake, which
+    // also means a new window can open behind whatever is in front. Ask for
+    // focus explicitly so "Open gitsurveil" actually shows you something.
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::ActivationPolicy;
+        let _ = app.set_activation_policy(ActivationPolicy::Regular);
+    }
+    window.set_focus()?;
+    Ok(())
+}
+
 /// Commands callable from the webview. Each is a thin pass-through to the
 /// daemon: the frontend never talks to GitHub, and never holds state the
 /// daemon doesn't have.
 mod commands {
-    use gitsurveil_proto::{ScoredItem, StatusResult};
+    use gitsurveil_proto::{AccountRef, ScoredItem, StatusResult};
 
     /// Returns every open action item, scored and sorted by the daemon's
     /// priority engine, or an error string the UI renders as a "service
@@ -204,5 +254,74 @@ mod commands {
             window.close().map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    /// Opens the full desktop window, and closes the popover behind it.
+    #[tauri::command]
+    pub async fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
+        crate::open_main(&app).map_err(|e| e.to_string())?;
+        close_popover(app).await
+    }
+
+    /// Resolved and dismissed items, for the history view.
+    #[tauri::command]
+    pub async fn list_history(limit: Option<usize>) -> Result<Vec<ScoredItem>, String> {
+        crate::daemon::list_history(limit)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Hides an item locally. GitHub activity on it will bring it back.
+    #[tauri::command]
+    pub async fn dismiss_item(id: String) -> Result<(), String> {
+        crate::daemon::set_dismissed(&id, true)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Restores a dismissed item.
+    #[tauri::command]
+    pub async fn undismiss_item(id: String) -> Result<(), String> {
+        crate::daemon::set_dismissed(&id, false)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Validates a token and registers an account.
+    #[tauri::command]
+    pub async fn add_account(
+        host: String,
+        token: String,
+        api_base: Option<String>,
+    ) -> Result<AccountRef, String> {
+        crate::daemon::add_account(&host, &token, api_base.as_deref())
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Removes an account, its items, and its stored token.
+    #[tauri::command]
+    pub async fn remove_account(id: String) -> Result<(), String> {
+        crate::daemon::remove_account(&id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Lists configured accounts. Never includes tokens.
+    #[tauri::command]
+    pub async fn list_accounts() -> Result<Vec<AccountRef>, String> {
+        crate::daemon::list_accounts().await.map_err(|e| e.to_string())
+    }
+
+    /// Lists the active priority rules, so the UI can explain scores.
+    #[tauri::command]
+    pub async fn list_rules() -> Result<serde_json::Value, String> {
+        crate::daemon::list_rules().await.map_err(|e| e.to_string())
+    }
+
+    /// Triggers an immediate poll instead of waiting for the next cycle.
+    #[tauri::command]
+    pub async fn poll_now() -> Result<(), String> {
+        crate::daemon::poll_now().await.map_err(|e| e.to_string())
     }
 }

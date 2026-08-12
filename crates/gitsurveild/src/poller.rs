@@ -43,7 +43,10 @@ pub async fn run(store: Arc<Store>, rules: Vec<Rule>, mut interval_secs: u64) {
     }
 }
 
-async fn poll_all_accounts(store: &Store, rules: &[Rule]) -> Option<u64> {
+/// Runs one full poll cycle across every account: fetch, diff, store, and
+/// dispatch any notifications that clear the gate. Exposed so the `poll.now`
+/// API method can force a cycle without waiting for the timer.
+pub async fn poll_all_accounts(store: &Store, rules: &[Rule]) -> Option<u64> {
     let accounts = match store.list_accounts() {
         Ok(a) => a,
         Err(e) => {

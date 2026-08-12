@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use gitsurveil_proto::{Request, Response, ScoredItem, StatusResult};
+use gitsurveil_proto::{AccountRef, Request, Response, ScoredItem, StatusResult};
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -126,4 +126,55 @@ pub async fn status() -> Result<StatusResult> {
 /// the daemon.
 pub async fn list_items() -> Result<Vec<ScoredItem>> {
     call("items.list", serde_json::Value::Null).await
+}
+
+/// Fetches resolved and dismissed items for the history view.
+pub async fn list_history(limit: Option<usize>) -> Result<Vec<ScoredItem>> {
+    let params = match limit {
+        Some(limit) => serde_json::json!({ "limit": limit }),
+        None => serde_json::Value::Null,
+    };
+    call("items.history", params).await
+}
+
+/// Sets an item's locally-dismissed state.
+pub async fn set_dismissed(id: &str, dismissed: bool) -> Result<()> {
+    let method = if dismissed {
+        "items.dismiss"
+    } else {
+        "items.undismiss"
+    };
+    let _: serde_json::Value = call(method, serde_json::json!({ "id": id })).await?;
+    Ok(())
+}
+
+/// Validates a token against `host` and registers the account.
+pub async fn add_account(host: &str, token: &str, api_base: Option<&str>) -> Result<AccountRef> {
+    let mut params = serde_json::json!({ "host": host, "token": token });
+    if let Some(api_base) = api_base {
+        params["api_base"] = serde_json::Value::String(api_base.to_string());
+    }
+    call("accounts.add", params).await
+}
+
+/// Removes an account, its items, and its stored token.
+pub async fn remove_account(id: &str) -> Result<()> {
+    let _: serde_json::Value = call("accounts.remove", serde_json::json!({ "id": id })).await?;
+    Ok(())
+}
+
+/// Lists configured accounts.
+pub async fn list_accounts() -> Result<Vec<AccountRef>> {
+    call("accounts.list", serde_json::Value::Null).await
+}
+
+/// Lists the active priority rules.
+pub async fn list_rules() -> Result<serde_json::Value> {
+    call("rules.list", serde_json::Value::Null).await
+}
+
+/// Asks the daemon to poll now rather than waiting for the next cycle.
+pub async fn poll_now() -> Result<()> {
+    let _: serde_json::Value = call("poll.now", serde_json::Value::Null).await?;
+    Ok(())
 }

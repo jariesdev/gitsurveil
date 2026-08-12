@@ -29,10 +29,7 @@ pub fn get_token(account_id: &str) -> Result<Option<String>> {
     }
 }
 
-/// Removes the token stored for `account_id`. Not yet called — wired up when
-/// the `accounts.remove` method (Phase 5) lands; kept next to `set_token`
-/// since a token store without a delete path would be an incomplete API.
-#[allow(dead_code)]
+/// Removes the token stored for `account_id` (used by `accounts.remove`).
 pub fn delete_token(account_id: &str) -> Result<()> {
     let entry = Entry::new(SERVICE, account_id)?;
     match entry.delete_credential() {

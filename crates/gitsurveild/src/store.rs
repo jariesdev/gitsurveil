@@ -124,9 +124,7 @@ impl Store {
 
     /// Removes an account and (via `ON DELETE CASCADE`) all of its items.
     /// Does not touch the keychain — callers must also call
-    /// [`crate::keychain::delete_token`]. Not yet called from the socket API
-    /// — wired up by the Phase 5 `accounts.remove` method.
-    #[allow(dead_code)]
+    /// [`crate::keychain::delete_token`].
     pub fn remove_account(&self, account_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM accounts WHERE id = ?1", params![account_id])?;
@@ -203,9 +201,7 @@ impl Store {
         Ok(())
     }
 
-    /// Sets an item's local dismissed state. Not yet called from the socket
-    /// API — wired up by the Phase 3 `items.dismiss`/`items.undismiss` methods.
-    #[allow(dead_code)]
+    /// Sets an item's local dismissed state (`items.dismiss`/`items.undismiss`).
     pub fn set_dismissed(&self, item_id: &str, dismissed: bool) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let state = if dismissed { "dismissed" } else { "open" };
@@ -240,6 +236,22 @@ impl Store {
              FROM items WHERE state = 'open'",
         )?;
         let rows = stmt.query_map([], row_to_item)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Resolved and dismissed items, newest activity first — the desktop UI's
+    /// history view (`specs/desktop-ui.md`).
+    pub fn history_items(&self, limit: usize) -> Result<Vec<ActionItem>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, kind, state, repo, number, title, url, author,
+                    created_at, updated_at, first_seen_at, last_seen_at, ci_status, raw_kind
+             FROM items WHERE state != 'open'
+             ORDER BY last_seen_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], row_to_item)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }

@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { daemonStatus, listItems, openUrl } from "./ipc";
+import { daemonStatus, listItems, openMainWindow, openUrl } from "./ipc";
 import { KIND_LABELS, type ScoredItem, type Severity, type StatusResult } from "./types";
 
 /** What the popover is currently showing. */
@@ -167,11 +167,15 @@ export function Popover() {
             ? "All clear"
             : `${items.length} item${items.length === 1 ? "" : "s"}`}
         </span>
-        <span className="text-[11px] text-neutral-500">
+        <button
+          type="button"
+          onClick={() => void openMainWindow()}
+          className="text-[11px] text-neutral-500 underline-offset-2 hover:underline"
+        >
           {status.account_count === 0
-            ? "No account configured"
-            : `${status.account_count} account${status.account_count === 1 ? "" : "s"}`}
-        </span>
+            ? "Set up an account"
+            : "Open gitsurveil"}
+        </button>
       </header>
 
       {items.length === 0 ? (

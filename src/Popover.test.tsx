@@ -15,6 +15,7 @@ vi.mock("./ipc", () => ({
   daemonStatus: vi.fn(),
   openUrl: vi.fn(),
   closePopover: vi.fn(),
+  openMainWindow: vi.fn(),
 }));
 
 const { listItems, daemonStatus } = await import("./ipc");
@@ -67,6 +68,9 @@ describe("Popover", () => {
     expect(screen.getByText("Review requested")).toBeInTheDocument();
     expect(screen.getByText("acme/api#482")).toBeInTheDocument();
     expect(screen.getByText("1 item")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Open gitsurveil" }),
+    ).toBeInTheDocument();
   });
 
   it("shows an all-clear state when there is nothing to do", async () => {
@@ -131,9 +135,11 @@ describe("Popover", () => {
     render(<Popover />);
 
     await screen.findByText("First");
-    const titles = screen.getAllByRole("button").map((b) => b.textContent);
-    expect(titles[0]).toContain("First");
-    expect(titles[1]).toContain("Second");
+    // Scoped to the list, so the header's "Open gitsurveil" button doesn't
+    // count as the first row.
+    const rows = screen.getAllByRole("listitem").map((li) => li.textContent);
+    expect(rows[0]).toContain("First");
+    expect(rows[1]).toContain("Second");
   });
 
   it("marks failing CI with an accessible indicator", async () => {

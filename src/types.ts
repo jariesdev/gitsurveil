@@ -91,3 +91,31 @@ export const SEVERITY_LABELS: Record<Severity, string> = {
   info: "Info",
   idle: "Idle",
 };
+
+/** A configured GitHub account. Never carries a token. */
+export interface AccountRef {
+  id: string;
+  host: string;
+  api_base: string;
+  login: string;
+  auth_kind: "pat" | "oauth_device";
+}
+
+/** One priority rule, as stored in the daemon's config. */
+export interface Rule {
+  id: string;
+  enabled: boolean;
+  match: {
+    kind?: ItemKind[];
+    repo?: string;
+    author?: string[];
+  };
+  effect: {
+    add?: number;
+    pin_severity?: Severity;
+    mute_notifications?: boolean;
+  };
+}
+
+/** How the dashboard groups items. */
+export type GroupBy = "priority" | "type";
