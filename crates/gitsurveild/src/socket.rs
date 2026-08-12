@@ -44,6 +44,7 @@ struct AccountsAddParams {
 /// returns its [`Response`]. Kept as a single flat `match` — one method per
 /// arm, no framework — per `CLAUDE.md`'s "no frameworks in the daemon" rule.
 async fn dispatch(state: &ServerState, req: Request) -> Response {
+    tracing::debug!(method = %req.method, id = req.id, "api request");
     let result = match req.method.as_str() {
         "status" => handle_status(state),
         "items.list" => handle_items_list(state, req.params),
