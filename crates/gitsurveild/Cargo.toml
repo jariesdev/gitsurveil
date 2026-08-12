@@ -24,3 +24,4 @@ directories = "6.0.0"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 uuid = { version = "1.24.0", features = ["v4"] }
+notify-rust = "4.18.0"

@@ -11,6 +11,7 @@ mod config;
 mod error;
 mod github;
 mod keychain;
+mod notifications;
 mod poller;
 mod socket;
 mod store;

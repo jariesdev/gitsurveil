@@ -3,6 +3,7 @@
 //! that provably tracks the user's review requests, assignments, mentions,
 //! and CI failures with no UI involved.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,6 +11,7 @@ use gitsurveil_proto::AccountRef;
 
 use crate::github::diff::{diff, ChangeKind};
 use crate::github::GitHubClient;
+use crate::notifications;
 use crate::store::Store;
 use crate::{keychain, DaemonError};
 
@@ -89,19 +91,28 @@ async fn poll_account(store: &Store, account: &AccountRef) -> crate::error::Resu
     }
 
     let previous = store.items_for_account(&account.id)?;
+    let previous_by_id: HashMap<&str, &gitsurveil_proto::ActionItem> =
+        previous.iter().map(|i| (i.id.as_str(), i)).collect();
     let result = diff(&previous, &fetched);
 
+    let mut to_notify = Vec::new();
     for (change_kind, mut item) in result.changes {
+        let prev = previous_by_id.get(item.id.as_str()).copied();
         if change_kind != ChangeKind::New {
             // Preserve the original first_seen_at on updates/carries; the
             // GitHub client only knows "now" since it has no prior record.
-            if let Some(prev) = previous.iter().find(|p| p.id == item.id) {
+            if let Some(prev) = prev {
                 item.first_seen_at = prev.first_seen_at.clone();
             }
+        }
+        if notifications::should_notify(change_kind, prev, &item) {
+            to_notify.push(item.clone());
         }
         item.last_seen_at = now_rfc3339();
         store.upsert_item(&item)?;
     }
+    notifications::dispatch_batch(&to_notify);
+
     for resolved_id in result.resolved_ids {
         store.mark_item_done(&resolved_id)?;
     }
