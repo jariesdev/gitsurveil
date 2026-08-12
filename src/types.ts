@@ -1,0 +1,60 @@
+/**
+ * TypeScript mirror of the `gitsurveil-proto` Rust crate.
+ *
+ * These types must stay in sync with `crates/gitsurveil-proto/src/item.rs`.
+ * Per `CLAUDE.md` the long-term plan is to generate this file from the Rust
+ * definitions; until that generator exists, treat the Rust crate as the source
+ * of truth and update this file alongside it.
+ */
+
+/** The kind of event an {@link ActionItem} represents. */
+export type ItemKind =
+  | "review_requested"
+  | "assigned"
+  | "mentioned"
+  | "participating"
+  | "ci_failed"
+  | "review_state_changed";
+
+/** Local lifecycle state of an item, distinct from GitHub's own state. */
+export type ItemState = "open" | "done" | "dismissed";
+
+/** Aggregate CI/check-run status for a pull request. */
+export type CiStatus = "none" | "pending" | "passing" | "failing";
+
+/** One normalized action item served by the daemon. */
+export interface ActionItem {
+  id: string;
+  account_id: string;
+  kind: ItemKind;
+  state: ItemState;
+  repo: string;
+  number: number | null;
+  title: string;
+  url: string;
+  author: string;
+  created_at: string;
+  updated_at: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  ci_status: CiStatus;
+  raw_kind: string;
+}
+
+/** The daemon's health/status summary. */
+export interface StatusResult {
+  version: string;
+  uptime_secs: number;
+  account_count: number;
+  open_item_count: number;
+}
+
+/** Human-readable label for each item kind, used in the list UI. */
+export const KIND_LABELS: Record<ItemKind, string> = {
+  review_requested: "Review requested",
+  assigned: "Assigned",
+  mentioned: "Mentioned",
+  participating: "Participating",
+  ci_failed: "CI failed",
+  review_state_changed: "Changes requested",
+};

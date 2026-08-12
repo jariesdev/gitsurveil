@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/gitsurveil-proto",
     "crates/gitsurveild",
+    "crates/gitsurveil-app",
 ]
 
 [workspace.package]
