@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gitsurveil-proto",
+    "crates/gitsurveild",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
+thiserror = "2"
+tracing = "0.1"
