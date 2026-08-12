@@ -10,15 +10,15 @@ GitHub directly with your own token, and no data goes anywhere else.
 
 ## Status
 
-**Early development.** Phases 1–2 of 9 are done: the daemon monitors GitHub and
-sends notifications. **There is no user interface yet** — the menubar app
-arrives in Phase 3, the full desktop UI in Phase 5.
+**Early development.** Phases 1–3 of 9 are done: the daemon monitors GitHub and
+sends notifications, and a menubar app shows what's pending. The full desktop
+UI (filters, rules, PR management) arrives in Phase 5.
 
 | Phase | Feature | Status |
 |---|---|---|
 | 1 | Core monitoring (poller, storage, local API) | ✅ Done |
 | 2 | Desktop notifications | ✅ Done |
-| 3 | Menubar app (tray + notifications popover) | Not started |
+| 3 | Menubar app (tray + notifications popover) | ✅ Done |
 | 4 | Priority engine (scoring, severity tray, outrank gate) | Not started |
 | 5 | Full desktop UI (dashboard, rules, accounts) | Not started |
 | 6 | PR management (create/update/close/merge, comments) | Not started |
@@ -45,17 +45,24 @@ gitsurveild (Rust daemon) ── polls GitHub, owns all state,
                              sends notifications, serves a local
                              JSON API over a unix socket
         ▲
-        └── thin UI clients (Tauri v2 + React) — not built yet
+gitsurveil (Tauri v2 app) ── tray icon + notifications popover.
+                             The full desktop window is Phase 5.
 ```
 
-The daemon owns everything stateful; the UIs, once they exist, only render and
-forward intent. It never listens on a network port, and tokens live only in the
-OS keychain — never in the database, config files, or logs.
+The daemon owns everything stateful; the app only renders and forwards intent.
+Quitting the app doesn't stop monitoring. The daemon never listens on a network
+port, and tokens live only in the OS keychain — never in the database, config
+files, or logs.
+
+The popover's webview is **destroyed** when it closes, not hidden, and rebuilt
+on the next tray click. That's what keeps an idle menubar app cheap: with the
+popover closed, no webview process exists at all.
 
 ## Requirements
 
 - **Rust** (stable). Install via [rustup](https://rustup.rs):
   `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- **Node.js 20+ and pnpm**, to build the app's frontend.
 - **macOS or Linux.** The Windows named-pipe transport is written but not yet
   verified; it gets tested in Phase 9.
 - A **GitHub personal access token** with the `notifications` and `repo` scopes.
@@ -65,10 +72,13 @@ OS keychain — never in the database, config files, or logs.
 ```bash
 git clone <repository-url>
 cd gitsurveil
-cargo build --release
+pnpm install
+pnpm build              # build the frontend bundle first
+cargo build --release   # then the daemon and app
 ```
 
-The daemon binary lands at `target/release/gitsurveild`.
+Two binaries land in `target/release/`: `gitsurveild` (the daemon) and
+`gitsurveil` (the menubar app).
 
 ## Usage
 
@@ -99,7 +109,24 @@ Once an account is added, the daemon polls every 60 seconds (honoring GitHub's
 own rate-limit guidance) and sends a desktop notification when something new
 needs you.
 
-### 3. Inspect what it's tracking
+### 3. Run the menubar app
+
+```bash
+./target/release/gitsurveil
+```
+
+An icon appears in your menu bar. Click it to open the popover — a list of
+everything currently waiting on you, newest activity first, with a colored dot
+for failing CI. Click any row to open it on GitHub; the popover dismisses
+itself. Clicking elsewhere also dismisses it.
+
+Right-click the icon for **Open gitsurveil** and **Quit**. Quitting the app
+leaves the daemon running, so notifications keep arriving.
+
+If the popover says the service isn't running, start the daemon (step 1) and
+press Retry.
+
+### 4. Inspect what it's tracking (optional)
 
 ```bash
 echo '{"id":2,"method":"status","params":null}'        | nc -U "$SOCK"
@@ -129,11 +156,12 @@ being offline), they collapse into one summary notification instead of a burst.
 Two current limitations, both temporary:
 
 - **Clicking a notification doesn't open the item.** macOS only supports action
-  labels for unbundled binaries, so rather than half-implement it, click-through
-  will come via the menubar popover in Phase 3.
-- **No quiet hours or priority filtering yet.** Everything new notifies. The
-  priority engine in Phase 4 adds severity scoring and the "only interrupt me
-  for things that outrank my current work" gate.
+  labels for unbundled binaries. Use the menubar popover to click through to
+  GitHub instead.
+- **No quiet hours or priority filtering yet.** Everything new notifies, and the
+  popover lists items by most recent activity. The priority engine in Phase 4
+  adds severity scoring, a severity-colored tray icon, and the "only interrupt
+  me for things that outrank my current work" gate.
 
 ## A note on sleep
 
@@ -147,9 +175,25 @@ clamshell mode on power).
 
 ```bash
 cargo test              # daemon + proto tests
+pnpm test               # frontend tests (Vitest)
 cargo doc --no-deps     # must build warning-free
-cargo build --release   # optimized binary
+pnpm tauri dev          # run the app with frontend hot-reload
 ```
+
+`pnpm tauri dev` expects the daemon to already be running.
+
+### Memory footprint
+
+Measured on macOS with release builds, popover closed:
+
+| Process | Footprint |
+|---|---|
+| `gitsurveild` (daemon) | ~9 MB |
+| `gitsurveil` (menubar app) | ~25 MB |
+
+The app figure is `phys_footprint` — the private memory macOS attributes to the
+process, and what Activity Monitor shows. Its raw RSS reads far higher (~84 MB)
+because it counts shared system framework pages that every app maps.
 
 Specifications live in `/specs` — one document per feature, and the source of
 truth for behavior. Read the relevant spec before changing a feature.
