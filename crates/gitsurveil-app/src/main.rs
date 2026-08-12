@@ -67,6 +67,10 @@ fn main() {
 }
 
 /// Builds the tray icon and its right-click menu.
+///
+/// Deliberately the *only* place a tray icon is created: declaring one in
+/// `tauri.conf.json` as well produces a second, inert icon in the menu bar,
+/// since the config-declared icon carries none of the handlers below.
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let open_full_ui = MenuItem::with_id(app, "open_full_ui", "Open gitsurveil", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -128,6 +132,11 @@ fn toggle_popover(app: &tauri::AppHandle) -> tauri::Result<()> {
         .skip_taskbar(true)
         .visible(false)
         .build()?;
+
+    // Belt and braces on the frameless look: the builder flag alone has been
+    // observed to leave a title bar on macOS, so assert it on the built window
+    // too. A menubar popover with window chrome looks like a stray dialog.
+    popover.set_decorations(false)?;
 
     use tauri_plugin_positioner::{Position, WindowExt};
     // TrayCenter needs the tray position captured by `on_tray_event` above.
