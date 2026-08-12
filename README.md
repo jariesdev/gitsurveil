@@ -73,12 +73,18 @@ popover closed, no webview process exists at all.
 git clone <repository-url>
 cd gitsurveil
 pnpm install
-pnpm build              # build the frontend bundle first
-cargo build --release   # then the daemon and app
+
+# The app must be built through the Tauri CLI, which embeds the frontend
+# bundle. A plain `cargo build` produces a binary that still points at the
+# dev server, so its popover comes up blank.
+pnpm tauri build --config crates/gitsurveil-app/tauri.conf.json --no-bundle
+
+cargo build --release -p gitsurveild
 ```
 
 Two binaries land in `target/release/`: `gitsurveild` (the daemon) and
-`gitsurveil` (the menubar app).
+`gitsurveil` (the menubar app). Drop `--no-bundle` to also produce a `.app`
+and installer.
 
 ## Usage
 
@@ -184,16 +190,21 @@ pnpm tauri dev          # run the app with frontend hot-reload
 
 ### Memory footprint
 
-Measured on macOS with release builds, popover closed:
+Measured on macOS with release builds:
 
 | Process | Footprint |
 |---|---|
-| `gitsurveild` (daemon) | ~9 MB |
-| `gitsurveil` (menubar app) | ~25 MB |
+| `gitsurveild` (daemon), idle | ~3–9 MB |
+| `gitsurveil`, popover closed | ~24 MB |
+| `gitsurveil`, popover open | ~25 MB |
 
-The app figure is `phys_footprint` — the private memory macOS attributes to the
-process, and what Activity Monitor shows. Its raw RSS reads far higher (~84 MB)
+These are `phys_footprint` — the private memory macOS attributes to the
+process, and what Activity Monitor shows. Raw RSS reads far higher (~84 MB)
 because it counts shared system framework pages that every app maps.
+
+Closing the popover destroys its webview process outright (verified: the
+WebKit content process disappears), and repeated open/close cycles hold steady
+rather than creeping upward.
 
 Specifications live in `/specs` — one document per feature, and the source of
 truth for behavior. Read the relevant spec before changing a feature.
