@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use gitsurveil_proto::{ActionItem, Request, Response, StatusResult};
+use gitsurveil_proto::{Request, Response, ScoredItem, StatusResult};
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -122,7 +122,8 @@ pub async fn status() -> Result<StatusResult> {
     call("status", serde_json::Value::Null).await
 }
 
-/// Fetches every currently open action item.
-pub async fn list_items() -> Result<Vec<ActionItem>> {
+/// Fetches every currently open action item, already scored and ordered by
+/// the daemon.
+pub async fn list_items() -> Result<Vec<ScoredItem>> {
     call("items.list", serde_json::Value::Null).await
 }

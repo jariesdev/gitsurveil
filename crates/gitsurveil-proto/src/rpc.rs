@@ -8,6 +8,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::Severity;
+
 /// A request sent by a client (the Tauri app, or `curl --unix-socket` in dev)
 /// to the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,4 +57,7 @@ pub struct StatusResult {
     pub account_count: usize,
     /// Number of currently open (non-dismissed, non-done) items across all accounts.
     pub open_item_count: usize,
+    /// Severity of the highest-priority open item, which the tray icon
+    /// mirrors. [`Severity::Idle`] when nothing is open.
+    pub top_severity: Severity,
 }

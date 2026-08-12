@@ -9,12 +9,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { daemonStatus, listItems, openUrl } from "./ipc";
-import { KIND_LABELS, type ActionItem, type StatusResult } from "./types";
+import { KIND_LABELS, type ScoredItem, type Severity, type StatusResult } from "./types";
 
 /** What the popover is currently showing. */
 type LoadState =
   | { phase: "loading" }
-  | { phase: "ready"; items: ActionItem[]; status: StatusResult }
+  | { phase: "ready"; items: ScoredItem[]; status: StatusResult }
   /** Almost always "the daemon isn't running", which gets its own UI. */
   | { phase: "unreachable"; message: string };
 
@@ -29,8 +29,39 @@ function age(iso: string): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+/** Tailwind class for each severity band, matching the tray icon colors. */
+const SEVERITY_DOT: Record<Severity, string> = {
+  critical: "bg-red-500",
+  high: "bg-orange-500",
+  normal: "bg-blue-500",
+  info: "bg-neutral-400",
+  idle: "bg-neutral-300",
+};
+
+/**
+ * Leading dot showing the item's priority band. Muted items render hollow:
+ * still ranked and still visible, but explicitly not going to interrupt.
+ */
+function SeverityDot({
+  severity,
+  muted,
+}: {
+  severity: Severity;
+  muted: boolean;
+}) {
+  return (
+    <span
+      className={`inline-block h-2 w-2 shrink-0 rounded-full ${SEVERITY_DOT[severity]} ${
+        muted ? "opacity-40" : ""
+      }`}
+      aria-label={muted ? `${severity} priority, muted` : `${severity} priority`}
+      role="img"
+    />
+  );
+}
+
 /** Colored dot conveying CI state at a glance. */
-function CiDot({ status }: { status: ActionItem["ci_status"] }) {
+function CiDot({ status }: { status: ScoredItem["ci_status"] }) {
   if (status === "none") return null;
   const color =
     status === "failing"
@@ -48,7 +79,7 @@ function CiDot({ status }: { status: ActionItem["ci_status"] }) {
 }
 
 /** One row in the list. */
-function ItemRow({ item }: { item: ActionItem }) {
+function ItemRow({ item }: { item: ScoredItem }) {
   return (
     <button
       type="button"
@@ -56,6 +87,7 @@ function ItemRow({ item }: { item: ActionItem }) {
       className="flex w-full flex-col gap-0.5 border-b border-neutral-200 px-3 py-2 text-left hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-800"
     >
       <div className="flex items-center gap-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+        <SeverityDot severity={item.severity} muted={item.muted} />
         <CiDot status={item.ci_status} />
         <span className="font-medium">{KIND_LABELS[item.kind]}</span>
         <span aria-hidden="true">·</span>

@@ -8,11 +8,14 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ActionItem, StatusResult } from "./types";
+import type { ScoredItem, StatusResult } from "./types";
 
-/** Fetches every currently open action item from the daemon. */
-export function listItems(): Promise<ActionItem[]> {
-  return invoke<ActionItem[]>("list_items");
+/**
+ * Fetches every currently open action item, already scored and sorted
+ * most-urgent-first by the daemon's priority engine.
+ */
+export function listItems(): Promise<ScoredItem[]> {
+  return invoke<ScoredItem[]>("list_items");
 }
 
 /** Fetches the daemon's status summary. */

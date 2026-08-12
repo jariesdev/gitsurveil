@@ -8,19 +8,25 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use chrono::Utc;
 use gitsurveil_proto::{AccountRef, AuthKind, Request, Response, StatusResult};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::error::{DaemonError, Result};
 use crate::github::GitHubClient;
-use crate::store::Store;
 use crate::keychain;
+use crate::priority::{self, Rule};
+use crate::store::Store;
 
 /// Shared state every connection's [`dispatch`] call can read.
 pub struct ServerState {
     pub store: Arc<Store>,
     pub started_at: Instant,
+    /// Priority rules, loaded from config at startup. Scores are recomputed on
+    /// every request rather than cached, since age escalation means an item's
+    /// priority drifts with the clock even when nothing about it changed.
+    pub rules: Vec<Rule>,
 }
 
 /// Params for `items.list`. All fields optional; an absent field means "no
@@ -68,12 +74,14 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
 
 fn handle_status(state: &ServerState) -> Result<serde_json::Value> {
     let account_count = state.store.list_accounts()?.len();
-    let open_item_count = state.store.open_items()?.len();
+    let items = state.store.open_items()?;
+    let scored = priority::score_all(&items, &state.rules, Utc::now());
     let status = StatusResult {
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_secs: state.started_at.elapsed().as_secs(),
         account_count,
-        open_item_count,
+        open_item_count: items.len(),
+        top_severity: priority::top_severity(&scored),
     };
     Ok(serde_json::to_value(status).expect("StatusResult always serializes"))
 }
@@ -85,7 +93,10 @@ fn handle_items_list(state: &ServerState, params: serde_json::Value) -> Result<s
         serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?
     };
     let items = state.store.open_items()?;
-    Ok(serde_json::to_value(items).expect("Vec<ActionItem> always serializes"))
+    // Returned already sorted most-urgent-first, so every client renders the
+    // same order without reimplementing the comparison.
+    let scored = priority::score_all(&items, &state.rules, Utc::now());
+    Ok(serde_json::to_value(scored).expect("Vec<ScoredItem> always serializes"))
 }
 
 fn handle_accounts_list(state: &ServerState) -> Result<serde_json::Value> {
@@ -252,6 +263,7 @@ mod tests {
         ServerState {
             store: Arc::new(Store::open_in_memory().unwrap()),
             started_at: Instant::now(),
+            rules: Vec::new(),
         }
     }
 

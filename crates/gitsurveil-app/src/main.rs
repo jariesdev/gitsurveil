@@ -16,6 +16,7 @@
 #![warn(missing_docs)]
 
 mod daemon;
+mod tray;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -26,6 +27,9 @@ use tauri::{
 /// Label of the popover window. Used to find (or confirm the absence of) the
 /// window on every tray click.
 const POPOVER_LABEL: &str = "popover";
+
+/// Id of the tray icon, so the severity watcher can find it to recolor.
+const TRAY_ID: &str = "main";
 
 /// Popover dimensions. Sized for a scannable list without becoming a second
 /// main window — the full UI is a separate surface (`specs/desktop-ui.md`).
@@ -51,6 +55,8 @@ fn main() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             build_tray(app.handle())?;
+            // Keeps the tray color current with no popover open.
+            tray::spawn_severity_watcher(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -76,7 +82,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open_full_ui, &quit])?;
 
-    TrayIconBuilder::with_id("main")
+    TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().cloned().expect("bundled icon"))
         // Let the OS tint the icon for light/dark menu bars instead of
         // shipping two assets. Severity coloring replaces this in Phase 4.
@@ -163,12 +169,13 @@ fn toggle_popover(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// daemon: the frontend never talks to GitHub, and never holds state the
 /// daemon doesn't have.
 mod commands {
-    use gitsurveil_proto::{ActionItem, StatusResult};
+    use gitsurveil_proto::{ScoredItem, StatusResult};
 
-    /// Returns every open action item, or an error string the UI renders as a
-    /// "service unreachable" state.
+    /// Returns every open action item, scored and sorted by the daemon's
+    /// priority engine, or an error string the UI renders as a "service
+    /// unreachable" state.
     #[tauri::command]
-    pub async fn list_items() -> Result<Vec<ActionItem>, String> {
+    pub async fn list_items() -> Result<Vec<ScoredItem>, String> {
         crate::daemon::list_items().await.map_err(|e| e.to_string())
     }
 

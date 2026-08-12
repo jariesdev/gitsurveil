@@ -9,7 +9,9 @@
 #![warn(missing_docs)]
 
 mod item;
+mod priority;
 mod rpc;
 
 pub use item::{AccountRef, ActionItem, AuthKind, CiStatus, ItemKind, ItemState};
+pub use priority::{ScoredItem, Severity};
 pub use rpc::{ErrorPayload, Request, Response, StatusResult};

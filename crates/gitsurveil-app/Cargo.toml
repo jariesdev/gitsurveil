@@ -18,6 +18,8 @@ serde_json.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 directories = "6.0.0"
-tauri = { version = "2", features = ["tray-icon"] }
+# `image-png` enables Image::from_bytes, which the severity-colored tray icons
+# are decoded with at runtime.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }

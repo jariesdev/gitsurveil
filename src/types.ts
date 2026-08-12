@@ -41,12 +41,27 @@ export interface ActionItem {
   raw_kind: string;
 }
 
+/** Coarse urgency band derived from an item's score. */
+export type Severity = "idle" | "info" | "normal" | "high" | "critical";
+
+/**
+ * An {@link ActionItem} plus the priority the daemon assigned it. Serialized
+ * flat, so an item's own fields sit alongside `score`/`severity`/`muted`.
+ */
+export interface ScoredItem extends ActionItem {
+  score: number;
+  severity: Severity;
+  /** A rule silenced notifications for this item; it still lists. */
+  muted: boolean;
+}
+
 /** The daemon's health/status summary. */
 export interface StatusResult {
   version: string;
   uptime_secs: number;
   account_count: number;
   open_item_count: number;
+  top_severity: Severity;
 }
 
 /** Human-readable label for each item kind, used in the list UI. */
@@ -57,4 +72,22 @@ export const KIND_LABELS: Record<ItemKind, string> = {
   participating: "Participating",
   ci_failed: "CI failed",
   review_state_changed: "Changes requested",
+};
+
+/** Display order for severity groups, most urgent first. */
+export const SEVERITY_ORDER: Severity[] = [
+  "critical",
+  "high",
+  "normal",
+  "info",
+  "idle",
+];
+
+/** Human-readable heading for each severity group. */
+export const SEVERITY_LABELS: Record<Severity, string> = {
+  critical: "Critical",
+  high: "High",
+  normal: "Normal",
+  info: "Info",
+  idle: "Idle",
 };

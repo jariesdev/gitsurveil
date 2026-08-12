@@ -8,7 +8,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Popover } from "./Popover";
-import type { ActionItem, StatusResult } from "./types";
+import type { ScoredItem, StatusResult } from "./types";
 
 vi.mock("./ipc", () => ({
   listItems: vi.fn(),
@@ -24,9 +24,10 @@ const status: StatusResult = {
   uptime_secs: 42,
   account_count: 1,
   open_item_count: 1,
+  top_severity: "high",
 };
 
-function item(overrides: Partial<ActionItem> = {}): ActionItem {
+function item(overrides: Partial<ScoredItem> = {}): ScoredItem {
   return {
     id: "item-1",
     account_id: "acc-1",
@@ -43,6 +44,9 @@ function item(overrides: Partial<ActionItem> = {}): ActionItem {
     last_seen_at: new Date().toISOString(),
     ci_status: "none",
     raw_kind: "review_requested",
+    score: 80,
+    severity: "high",
+    muted: false,
     ...overrides,
   };
 }
@@ -91,6 +95,45 @@ describe("Popover", () => {
       ).toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("labels each row with its priority band", async () => {
+    vi.mocked(listItems).mockResolvedValue([item({ severity: "critical" })]);
+    vi.mocked(daemonStatus).mockResolvedValue(status);
+
+    render(<Popover />);
+
+    expect(await screen.findByLabelText("critical priority")).toBeInTheDocument();
+  });
+
+  it("marks muted items as muted while still listing them", async () => {
+    // Muting silences notifications; the item must stay visible and stay
+    // ranked, or the user loses track of it entirely.
+    vi.mocked(listItems).mockResolvedValue([
+      item({ severity: "info", muted: true, title: "Muted thread" }),
+    ]);
+    vi.mocked(daemonStatus).mockResolvedValue(status);
+
+    render(<Popover />);
+
+    expect(await screen.findByText("Muted thread")).toBeInTheDocument();
+    expect(screen.getByLabelText("info priority, muted")).toBeInTheDocument();
+  });
+
+  it("renders items in the order the daemon returned them", async () => {
+    // The daemon sorts by score; the popover must not re-sort or reverse it.
+    vi.mocked(listItems).mockResolvedValue([
+      item({ id: "a", title: "First", severity: "critical", score: 100 }),
+      item({ id: "b", title: "Second", severity: "normal", score: 40 }),
+    ]);
+    vi.mocked(daemonStatus).mockResolvedValue(status);
+
+    render(<Popover />);
+
+    await screen.findByText("First");
+    const titles = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(titles[0]).toContain("First");
+    expect(titles[1]).toContain("Second");
   });
 
   it("marks failing CI with an accessible indicator", async () => {

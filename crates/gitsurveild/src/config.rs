@@ -10,6 +10,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DaemonError, Result};
+use crate::priority::Rule;
 
 /// Default polling interval, in seconds. GitHub's own `x-poll-interval` on
 /// `/notifications` floors at 60s; we default to matching it exactly and the
@@ -22,6 +23,10 @@ pub struct Config {
     /// How often to poll each account, in seconds.
     #[serde(default = "default_poll_interval")]
     pub poll_interval_secs: u64,
+    /// Priority rules (`specs/priority-engine.md`). Hand-editable; a graphical
+    /// editor arrives in Phase 5 and will write through this same file.
+    #[serde(default = "crate::priority::default_rules")]
+    pub rules: Vec<Rule>,
 }
 
 fn default_poll_interval() -> u64 {
@@ -32,6 +37,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             poll_interval_secs: DEFAULT_POLL_INTERVAL_SECS,
+            rules: crate::priority::default_rules(),
         }
     }
 }

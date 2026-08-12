@@ -13,6 +13,7 @@ mod github;
 mod keychain;
 mod notifications;
 mod poller;
+mod priority;
 mod socket;
 mod store;
 
@@ -63,10 +64,12 @@ async fn run() -> error::Result<()> {
     let state = Arc::new(ServerState {
         store: Arc::clone(&store),
         started_at: Instant::now(),
+        rules: config.rules.clone(),
     });
 
     let poll_handle = tokio::spawn(poller::run(
         Arc::clone(&store),
+        config.rules,
         config.poll_interval_secs,
     ));
 
