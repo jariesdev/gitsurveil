@@ -173,9 +173,15 @@ opens the full window:
   draft, review decision, CI, and mergeability. Filter by status (Open is the
   default; Closed, Merged, or All re-query the daemon), account, repository,
   role, and attention (draft / conflicted / CI failing / approved), plus
-  title+repo search. Click a row for the full PR detail pane; a conflicted row
-  gets an inline **Resolve conflicts** action (needs a local clone configured
-  for that repository on the Repositories tab).
+  title+repo search. A chat-bubble badge shows how many unresolved review
+  threads each PR has. Click a row for the full PR detail pane — rendered
+  markdown description and comments, per-file review threads you can reply to,
+  resolve, or unresolve, and inline editing of the title, description, target
+  branch, labels, and draft flag — and a conflicted
+  row gets an inline **Resolve conflicts** action (needs a local clone
+  configured for that repository on the Repositories tab). Right-click a row
+  to open the PR on GitHub (the menu names the provider, e.g. **Open in
+  GitHub**) in your browser.
 - **History** — resolved and dismissed items, with the option to restore a
   dismissal.
 - **Rules** — how scoring works, and what your configured rules do.
@@ -238,8 +244,10 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `pr.detail` | Full detail for one pull request |
 | `pr.create` / `pr.update` | Create a PR, or edit title/body/base/labels/reviewers |
 | `pr.close` / `pr.merge` | Close without merging, or merge |
-| `pr.comments` / `pr.comment` | Read the conversation, or post to it |
-| `pr.branches` | Branch names, for the create-PR form |
+| `pr.comments` / `pr.comment` | Read the conversation, or post a top-level comment |
+| `pr.comment_reply` | Reply inside a review thread |
+| `pr.resolve` | Resolve or unresolve a review thread |
+| `pr.branches` / `pr.labels` | Branch names and repo labels, for the create/edit pickers |
 | `prs.list` | Live list of PRs across accounts (standing state for the Pull Requests view); optional account filter and open/closed/merged state |
 | `repos.list` / `repos.set` / `repos.remove` | Local clone paths for the conflict resolver |
 | `conflicts.prepare` | Start a resolution session (temp worktree) |
