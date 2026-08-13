@@ -179,3 +179,65 @@ export interface Comment {
   created_at: string;
   path: string | null;
 }
+
+/**
+ * One ordered piece of a conflicted file (`specs/conflict-resolver.md`).
+ * Context segments are never edited; only conflict hunks change during
+ * resolution. Line content is verbatim (terminators included) so serializing
+ * unmodified segments back to text is byte-exact.
+ */
+export type ConflictSegment =
+  | { kind: "context"; lines: string[] }
+  | { kind: "conflict"; hunk: ConflictHunk };
+
+/** One `<<<<<<<` … `>>>>>>>` conflict block in a file. */
+export interface ConflictHunk {
+  /** 1-based line number of the `<<<<<<<` marker in the original file. */
+  start_line: number;
+  /** 1-based line number of the `>>>>>>>` marker (inclusive). */
+  end_line: number;
+  /** Verbatim marker block (terminators included); center pane's initial content. */
+  raw: string[];
+  /** Text after `<<<<<<<` (e.g. `HEAD`); null when git left no label. */
+  ours_label: string | null;
+  /** The PR branch's side of the conflict (left pane). */
+  ours: string[];
+  /** diff3 `|||||||` section; null for non-diff3 conflicts. */
+  base: string[] | null;
+  /** Text after `|||||||` (e.g. `merged common ancestor`); null when absent. */
+  base_label: string | null;
+  /** The base branch's side of the conflict (right pane). */
+  theirs: string[];
+  /** Text after `>>>>>>>` (e.g. the base branch name); null when absent. */
+  theirs_label: string | null;
+}
+
+/** A file's conflicted content in ordered segments. */
+export interface ConflictFile {
+  /** Path relative to the repository root. */
+  path: string;
+  /** True when git refuses a text merge (whole-file pick only). */
+  binary: boolean;
+  /** True when the file exceeds the text-editing threshold (whole-file pick only). */
+  large: boolean;
+  segments: ConflictSegment[];
+}
+
+/** Summary entry: enough to render the file list without the file's content. */
+export interface ConflictFileSummary {
+  path: string;
+  conflicts: number;
+  binary: boolean;
+  large: boolean;
+}
+
+/** A live conflict-resolution session on a temp worktree. */
+export interface ConflictSession {
+  session_id: string;
+  repo: string;
+  number: number;
+  base: string;
+  head: string;
+  worktree_path: string;
+  files: ConflictFileSummary[];
+}

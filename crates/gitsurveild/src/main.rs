@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 
 mod config;
+mod conflicts;
 mod error;
 mod gitops;
 mod github;
