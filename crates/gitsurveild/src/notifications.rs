@@ -56,6 +56,7 @@ fn kind_label(scored: &ScoredItem) -> &'static str {
         Participating => "Participating",
         CiFailed => "CI failed",
         ReviewStateChanged => "Changes requested",
+        ReadyToMerge => "Ready to merge",
     }
 }
 

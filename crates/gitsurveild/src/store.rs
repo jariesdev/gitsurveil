@@ -324,6 +324,7 @@ fn kind_to_str(k: ItemKind) -> &'static str {
         ItemKind::Participating => "participating",
         ItemKind::CiFailed => "ci_failed",
         ItemKind::ReviewStateChanged => "review_state_changed",
+        ItemKind::ReadyToMerge => "ready_to_merge",
     }
 }
 
@@ -334,6 +335,7 @@ fn kind_from_str(s: &str) -> ItemKind {
         "mentioned" => ItemKind::Mentioned,
         "ci_failed" => ItemKind::CiFailed,
         "review_state_changed" => ItemKind::ReviewStateChanged,
+        "ready_to_merge" => ItemKind::ReadyToMerge,
         _ => ItemKind::Participating,
     }
 }

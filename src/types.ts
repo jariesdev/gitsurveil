@@ -14,7 +14,8 @@ export type ItemKind =
   | "mentioned"
   | "participating"
   | "ci_failed"
-  | "review_state_changed";
+  | "review_state_changed"
+  | "ready_to_merge";
 
 /** Local lifecycle state of an item, distinct from GitHub's own state. */
 export type ItemState = "open" | "done" | "dismissed";
@@ -72,6 +73,7 @@ export const KIND_LABELS: Record<ItemKind, string> = {
   participating: "Participating",
   ci_failed: "CI failed",
   review_state_changed: "Changes requested",
+  ready_to_merge: "Ready to merge",
 };
 
 /** Display order for severity groups, most urgent first. */

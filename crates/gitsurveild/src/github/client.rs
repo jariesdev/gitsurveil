@@ -234,8 +234,14 @@ impl GitHubClient {
         })
     }
 
-    /// Runs the combined "review requested" + "assigned" GraphQL search
-    /// (`specs/github-integration.md`) in a single request.
+    /// Runs the combined "review requested" + "assigned" + "ready to merge"
+    /// GraphQL search (`specs/github-integration.md`) in a single request.
+    ///
+    /// The `authored:` alias exists for one reason: to notice when the user's
+    /// own PR becomes mergeable. It is a *transition* detector, not an
+    /// "everything I authored" feed — a merely-open authored PR produces no
+    /// item here (`specs/priority-engine.md`), because those belong in the
+    /// Pull Requests view, not the inbox.
     pub async fn fetch_search_items(&self) -> Result<Vec<ActionItem>> {
         const QUERY: &str = r#"
             query {
@@ -245,6 +251,9 @@ impl GitHubClient {
               assigned: search(query: "is:open assignee:@me", type: ISSUE, first: 50) {
                 nodes { ...prFields }
               }
+              authored: search(query: "is:open is:pr author:@me", type: ISSUE, first: 50) {
+                nodes { ...prFields }
+              }
             }
             fragment prFields on PullRequest {
               number
@@ -252,6 +261,9 @@ impl GitHubClient {
               url
               createdAt
               updatedAt
+              isDraft
+              reviewDecision
+              mergeable
               author { login }
               repository { nameWithOwner }
               commits(last: 1) {
@@ -274,13 +286,18 @@ impl GitHubClient {
         for node in resp.data.assigned.nodes {
             items.push(node.into_action_item(&self.account_id, ItemKind::Assigned));
         }
+        for node in resp.data.authored.nodes {
+            if let Some(item) = node.into_ready_to_merge_item(&self.account_id) {
+                items.push(item);
+            }
+        }
         Ok(items)
     }
 }
 
 /// Shape of one entry from `GET /notifications`
 /// (<https://docs.github.com/en/rest/activity/notifications>).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RawNotification {
     id: String,
     reason: String,
@@ -289,13 +306,13 @@ struct RawNotification {
     repository: RawRepository,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RawSubject {
     title: String,
     url: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RawRepository {
     full_name: String,
     html_url: String,
@@ -346,24 +363,25 @@ fn classify_reason(reason: &str) -> ItemKind {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GraphQlEnvelope {
     data: GraphQlData,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GraphQlData {
     #[serde(rename = "reviewRequested")]
     review_requested: SearchResult,
     assigned: SearchResult,
+    authored: SearchResult,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct SearchResult {
     nodes: Vec<PrNode>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct PrNode {
     number: u64,
     title: String,
@@ -372,47 +390,53 @@ struct PrNode {
     created_at: String,
     #[serde(rename = "updatedAt")]
     updated_at: String,
+    #[serde(rename = "isDraft")]
+    is_draft: bool,
+    #[serde(rename = "reviewDecision")]
+    review_decision: String,
+    mergeable: String,
     author: Option<PrAuthor>,
     repository: PrRepository,
     commits: PrCommits,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct PrAuthor {
     login: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct PrRepository {
     #[serde(rename = "nameWithOwner")]
     name_with_owner: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct PrCommits {
     nodes: Vec<PrCommitNode>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct PrCommitNode {
     commit: PrCommit,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct PrCommit {
     #[serde(rename = "statusCheckRollup")]
     status_check_rollup: Option<StatusCheckRollup>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct StatusCheckRollup {
     state: String,
 }
 
 impl PrNode {
-    fn into_action_item(self, account_id: &str, kind: ItemKind) -> ActionItem {
-        let ci_status = self
-            .commits
+    /// Aggregate CI status from the latest commit's check-rollup, or
+    /// [`CiStatus::None`] when GitHub reports none.
+    fn ci_status(&self) -> CiStatus {
+        self.commits
             .nodes
             .first()
             .and_then(|n| n.commit.status_check_rollup.as_ref())
@@ -422,7 +446,22 @@ impl PrNode {
                 "PENDING" | "EXPECTED" => CiStatus::Pending,
                 _ => CiStatus::None,
             })
-            .unwrap_or(CiStatus::None);
+            .unwrap_or(CiStatus::None)
+    }
+
+    /// Whether this authored PR has crossed into `ReadyToMerge`: approved by
+    /// review, mergeable, not a draft, and CI not failing. The one moment an
+    /// authored PR needs its owner. Every other combination produces
+    /// nothing — those PRs belong to the view, not the inbox.
+    fn is_ready_to_merge(&self) -> bool {
+        self.review_decision == "APPROVED"
+            && self.mergeable == "MERGEABLE"
+            && !self.is_draft
+            && self.ci_status() != CiStatus::Failing
+    }
+
+    fn into_action_item(self, account_id: &str, kind: ItemKind) -> ActionItem {
+        let ci_status = self.ci_status();
         let now = crate::poller::now_rfc3339();
         ActionItem {
             id: format!(
@@ -444,5 +483,95 @@ impl PrNode {
             ci_status,
             raw_kind: format!("{kind:?}"),
         }
+    }
+
+    /// Turns this authored node into a `ReadyToMerge` item, or `None` when the
+    /// PR hasn't crossed the threshold. `None` is the whole point: a merely
+    /// open authored PR must never notify its owner.
+    fn into_ready_to_merge_item(self, account_id: &str) -> Option<ActionItem> {
+        if !self.is_ready_to_merge() {
+            return None;
+        }
+        Some(self.into_action_item(account_id, ItemKind::ReadyToMerge))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(
+        review_decision: &str,
+        mergeable: &str,
+        is_draft: bool,
+        ci_state: Option<&str>,
+    ) -> PrNode {
+        PrNode {
+            number: 1,
+            title: "t".into(),
+            url: "u".into(),
+            created_at: "2026-08-13T12:00:00Z".into(),
+            updated_at: "2026-08-13T12:00:00Z".into(),
+            is_draft,
+            review_decision: review_decision.into(),
+            mergeable: mergeable.into(),
+            author: Some(PrAuthor { login: "me".into() }),
+            repository: PrRepository {
+                name_with_owner: "acme/api".into(),
+            },
+            commits: PrCommits {
+                nodes: vec![PrCommitNode {
+                    commit: PrCommit {
+                        status_check_rollup: ci_state.map(|s| StatusCheckRollup {
+                            state: s.into(),
+                        }),
+                    },
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn ready_to_merge_fires_only_when_all_four_hold() {
+        // The full predicate: approved + mergeable + not draft + CI not failing.
+        let ready = node("APPROVED", "MERGEABLE", false, Some("SUCCESS"));
+        assert!(ready.is_ready_to_merge());
+        assert!(ready.clone().into_ready_to_merge_item("acc").is_some());
+
+        // Each near-miss alone must kill the transition (AC-5.1).
+        assert!(!node("CHANGES_REQUESTED", "MERGEABLE", false, Some("SUCCESS")).is_ready_to_merge());
+        assert!(!node("REVIEW_REQUIRED", "MERGEABLE", false, Some("SUCCESS")).is_ready_to_merge());
+        assert!(!node("APPROVED", "CONFLICTING", false, Some("SUCCESS")).is_ready_to_merge());
+        assert!(!node("APPROVED", "UNKNOWN", false, Some("SUCCESS")).is_ready_to_merge());
+        assert!(!node("APPROVED", "MERGEABLE", true, Some("SUCCESS")).is_ready_to_merge());
+        assert!(!node("APPROVED", "MERGEABLE", false, Some("FAILURE")).is_ready_to_merge());
+        assert!(!node("APPROVED", "MERGEABLE", false, Some("ERROR")).is_ready_to_merge());
+    }
+
+    #[test]
+    fn pending_or_missing_ci_still_counts_as_not_failing() {
+        // "CI not failing" is the gate — pending is not failing. A PR with
+        // checks still running is one a reviewer already approved.
+        assert!(node("APPROVED", "MERGEABLE", false, Some("PENDING")).is_ready_to_merge());
+        assert!(node("APPROVED", "MERGEABLE", false, None).is_ready_to_merge());
+    }
+
+    #[test]
+    fn merely_open_authored_pr_produces_no_item() {
+        // AC-5.4: opening a PR must not notify you about it.
+        let open = node("NONE", "UNKNOWN", false, Some("PENDING"));
+        assert!(!open.is_ready_to_merge());
+        assert!(open.into_ready_to_merge_item("acc").is_none());
+    }
+
+    #[test]
+    fn ready_to_merge_item_carries_stable_id_and_kind() {
+        let item = node("APPROVED", "MERGEABLE", false, Some("SUCCESS"))
+            .into_ready_to_merge_item("acc")
+            .expect("predicate holds");
+        assert_eq!(item.kind, ItemKind::ReadyToMerge);
+        assert_eq!(item.id, "acc:ReadyToMerge:acme/api#1");
+        assert_eq!(item.ci_status, CiStatus::Passing);
+        assert_eq!(item.author, "me");
     }
 }

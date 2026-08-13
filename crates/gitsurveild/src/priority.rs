@@ -22,6 +22,8 @@ fn base_score(kind: ItemKind) -> i64 {
         // Someone else is blocked until you act.
         ItemKind::ReviewRequested => 80,
         ItemKind::ReviewStateChanged => 70,
+        // Your own work is one click from landing.
+        ItemKind::ReadyToMerge => 65,
         ItemKind::Mentioned => 50,
         ItemKind::Assigned => 40,
         ItemKind::Participating => 20,
@@ -289,6 +291,7 @@ mod tests {
             (ItemKind::CiFailed, 100, Severity::Critical),
             (ItemKind::ReviewRequested, 80, Severity::High),
             (ItemKind::ReviewStateChanged, 70, Severity::High),
+            (ItemKind::ReadyToMerge, 65, Severity::High),
             (ItemKind::Mentioned, 50, Severity::Normal),
             (ItemKind::Assigned, 40, Severity::Normal),
             (ItemKind::Participating, 20, Severity::Info),

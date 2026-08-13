@@ -26,6 +26,10 @@ pub enum ItemKind {
     CiFailed,
     /// A reviewer requested changes on the user's own pull request.
     ReviewStateChanged,
+    /// The user's own pull request is approved, green, and mergeable — one
+    /// click from landing. Fired only on the transition, never for a
+    /// merely-open authored PR (`specs/priority-engine.md`).
+    ReadyToMerge,
 }
 
 /// Local lifecycle state of an item. Distinct from GitHub's own

@@ -28,6 +28,7 @@ const ALL_KINDS: ItemKind[] = [
   "mentioned",
   "assigned",
   "participating",
+  "ready_to_merge",
 ];
 
 export function Dashboard({
