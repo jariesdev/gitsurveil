@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::CiStatus;
+
 /// Whether a pull request can be merged as-is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,4 +115,83 @@ impl MergeMethod {
             MergeMethod::Rebase => "rebase",
         }
     }
+}
+
+/// Why a pull request appears in the user's list. A set rather than a single
+/// value: one PR can be authored *and* self-assigned, and must then be one
+/// summary row carrying both roles instead of two rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrRole {
+    /// The user opened the PR.
+    Authored,
+    /// The user was requested as a reviewer.
+    ReviewRequested,
+    /// The PR is assigned to the user.
+    Assigned,
+}
+
+/// GitHub lifecycle state of a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrState {
+    /// Still open.
+    Open,
+    /// Closed without merging.
+    Closed,
+    /// Merged.
+    Merged,
+}
+
+/// The aggregate review decision GitHub has reached on a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDecision {
+    /// At least one approving review and none requesting changes.
+    Approved,
+    /// At least one review requesting changes.
+    ChangesRequested,
+    /// Review is required but no decision has been reached.
+    ReviewRequired,
+    /// No reviews and review not required.
+    None,
+}
+
+/// One row in the Pull Requests view (`specs/desktop-ui.md`).
+///
+/// A live projection of GitHub's search results, deliberately separate from
+/// the event-shaped [`ActionItem`](crate::ActionItem): it carries standing
+/// state (draft, review decision, mergeability) that an inbox item model
+/// cannot hold without distortion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequestSummary {
+    /// The account this PR was fetched under.
+    pub account_id: String,
+    /// `"owner/name"`.
+    pub repo: String,
+    /// PR number.
+    pub number: u64,
+    /// Title.
+    pub title: String,
+    /// Link to the PR on GitHub.
+    pub url: String,
+    /// Author login.
+    pub author: String,
+    /// Why the PR is in the list; may be several entries.
+    pub roles: Vec<PrRole>,
+    /// GitHub lifecycle state.
+    pub state: PrState,
+    /// Whether the PR is a draft.
+    pub draft: bool,
+    /// Aggregate CI status.
+    pub ci_status: CiStatus,
+    /// The aggregate review decision.
+    pub review_decision: ReviewDecision,
+    /// Whether it can be merged as-is. `Unknown` means GitHub is still
+    /// computing it — never treat that as conflicted.
+    pub mergeable: Mergeability,
+    /// ISO-8601 creation time.
+    pub created_at: String,
+    /// ISO-8601 last-update time.
+    pub updated_at: String,
 }

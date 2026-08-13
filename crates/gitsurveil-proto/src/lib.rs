@@ -18,6 +18,9 @@ pub use conflict::{
     ConflictFile, ConflictFileSummary, ConflictHunk, ConflictSegment, ConflictSession,
 };
 pub use item::{AccountRef, ActionItem, AuthKind, CiStatus, ItemKind, ItemState};
-pub use pr::{Check, Comment, MergeMethod, Mergeability, PullRequestDetail, Reviewer};
+pub use pr::{
+    Check, Comment, MergeMethod, Mergeability, PrRole, PrState, PullRequestDetail,
+    PullRequestSummary, ReviewDecision, Reviewer,
+};
 pub use priority::{ScoredItem, Severity};
 pub use rpc::{ErrorPayload, Request, Response, StatusResult};
