@@ -79,11 +79,16 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build the gitsurveil app")
         .run(|_app, event| {
-            // Keep the process alive when the popover closes. Without this,
-            // destroying the last window would quit the app and take the tray
-            // icon with it — but destroying that window is exactly how the
-            // idle-footprint budget is met.
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            // Keep the process alive when the last window closes. Without
+            // this, destroying the popover would quit the app and take the
+            // tray icon with it — but destroying that window is exactly how
+            // the idle-footprint budget is met.
+            //
+            // `code` distinguishes the two ways an exit is requested: `None`
+            // means the windows went away, `Some` means something called
+            // `app.exit()` — which is what the tray's Quit does. Vetoing both
+            // makes Quit do nothing at all.
+            if let tauri::RunEvent::ExitRequested { api, code: None, .. } = event {
                 api.prevent_exit();
             }
         });
@@ -204,12 +209,22 @@ fn open_main(app: &tauri::AppHandle) -> tauri::Result<()> {
         .build()?;
 
     // The app runs as an accessory (no dock icon) for the tray's sake, which
-    // also means a new window can open behind whatever is in front. Ask for
-    // focus explicitly so "Open gitsurveil" actually shows you something.
+    // also means a new window can open behind whatever is in front. Become a
+    // regular app while a real window is up, so "Open gitsurveil" actually
+    // shows you something and the window is reachable in the app switcher.
     #[cfg(target_os = "macos")]
     {
         use tauri::ActivationPolicy;
         let _ = app.set_activation_policy(ActivationPolicy::Regular);
+
+        // ...and go back to accessory when it closes, or the dock icon
+        // outlives the window that justified it.
+        let handle = app.clone();
+        window.on_window_event(move |event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                let _ = handle.set_activation_policy(ActivationPolicy::Accessory);
+            }
+        });
     }
     window.set_focus()?;
     Ok(())
