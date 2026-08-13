@@ -92,6 +92,29 @@ Each webview is **destroyed** when its window closes, not hidden, and rebuilt
 when reopened. That's what keeps an idle menubar app cheap: with everything
 closed, no webview process exists at all.
 
+## Install a release build
+
+Download the file for your platform from the
+[releases page](../../releases): a `.dmg` for macOS (Apple Silicon or Intel),
+`.AppImage`/`.deb` for Linux, `.msi` for Windows.
+
+These builds are not code-signed, so the first launch is blocked:
+
+- **macOS** — right-click the app, choose **Open**, then confirm.
+- **Windows** — SmartScreen: **More info → Run anyway**.
+
+The background service ships inside the app. To have it start at login:
+
+```bash
+# macOS, after dragging gitsurveil.app to /Applications
+/Applications/gitsurveil.app/Contents/MacOS/gitsurveild install
+```
+
+`gitsurveild status` reports whether it is registered and whether it is
+currently answering; `gitsurveild uninstall` removes the registration.
+
+## Build from source
+
 ## Requirements
 
 - **Rust** (stable). Install via [rustup](https://rustup.rs):
@@ -114,6 +137,14 @@ pnpm install
 pnpm tauri build --config crates/gitsurveil-app/tauri.conf.json --no-bundle
 
 cargo build --release -p gitsurveild
+```
+
+To produce an installable bundle instead, stage the daemon as a sidecar first
+so it ships inside the app, then bundle:
+
+```bash
+./scripts/bundle-daemon.sh
+pnpm tauri build --config crates/gitsurveil-app/tauri.conf.json
 ```
 
 Two binaries land in `target/release/`: `gitsurveild` (the daemon) and
