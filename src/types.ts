@@ -180,6 +180,56 @@ export interface Comment {
   path: string | null;
 }
 
+/** Why a pull request appears in the user's list. A set, not a single value:
+ * one PR can be authored *and* self-assigned, and must then be one row with
+ * both badges rather than two rows. */
+export type PrRole = "authored" | "review_requested" | "assigned";
+
+/** GitHub lifecycle state of a pull request. */
+export type PrState = "open" | "closed" | "merged";
+
+/** The aggregate review decision GitHub has reached on a pull request. */
+export type ReviewDecision =
+  | "approved"
+  | "changes_requested"
+  | "review_required"
+  | "none";
+
+/** One row in the Pull Requests view. A live projection of GitHub search,
+ * distinct from the event-shaped {@link ActionItem}: it carries standing state
+ * (draft, review decision, mergeability) an inbox item cannot. */
+export interface PullRequestSummary {
+  /** The account this PR was fetched under. */
+  account_id: string;
+  /** `"owner/name"`. */
+  repo: string;
+  /** PR number. */
+  number: number;
+  /** Title. */
+  title: string;
+  /** Link to the PR on GitHub. */
+  url: string;
+  /** Author login. */
+  author: string;
+  /** Why the PR is in the list; may be several entries. */
+  roles: PrRole[];
+  /** GitHub lifecycle state. */
+  state: PrState;
+  /** Whether the PR is a draft. */
+  draft: boolean;
+  /** Aggregate CI status. */
+  ci_status: CiStatus;
+  /** The aggregate review decision. */
+  review_decision: ReviewDecision;
+  /** Whether it can be merged as-is. `unknown` means GitHub is still
+   * computing it — never treat that as conflicted. */
+  mergeability: Mergeability;
+  /** ISO-8601 creation time. */
+  created_at: string;
+  /** ISO-8601 last-update time. */
+  updated_at: string;
+}
+
 /**
  * One ordered piece of a conflicted file (`specs/conflict-resolver.md`).
  * Context segments are never edited; only conflict hunks change during

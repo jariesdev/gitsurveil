@@ -14,7 +14,9 @@ import type {
   ConflictFile,
   ConflictSession,
   MergeMethod,
+  PrState,
   PullRequestDetail,
+  PullRequestSummary,
   RepoConfig,
   Rule,
   ScoredItem,
@@ -181,6 +183,21 @@ export function prComment(
 /** Branch names in a repository, for the create-PR form. */
 export function prBranches(repo: string): Promise<string[]> {
   return invoke<string[]>("pr_branches", { repo });
+}
+
+/**
+ * Rows for the Pull Requests view. `state` re-queries the daemon (it changes
+ * the GraphQL search qualifier); `accountId` restricts to one account. Every
+ * other filter is applied client-side in `src/desktop/PullRequests/filters.ts`.
+ */
+export function listPullRequests(args?: {
+  accountId?: string;
+  state?: PrState;
+}): Promise<PullRequestSummary[]> {
+  return invoke<PullRequestSummary[]>("prs_list", {
+    accountId: args?.accountId,
+    state: args?.state,
+  });
 }
 
 // ---- conflict resolution (`specs/conflict-resolver.md`) ------------------

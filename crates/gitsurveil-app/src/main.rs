@@ -73,6 +73,7 @@ fn main() {
             commands::pr_comments,
             commands::pr_comment,
             commands::pr_branches,
+            commands::prs_list,
             commands::conflict_prepare,
             commands::conflict_file,
             commands::conflict_save,
@@ -489,6 +490,22 @@ mod commands {
         crate::daemon::pr_call("pr.branches", serde_json::json!({ "repo": repo }))
             .await
             .map_err(|e| e.to_string())
+    }
+
+    /// Rows for the Pull Requests view (`specs/desktop-ui.md`). `state` is
+    /// `open`/`closed`/`merged` or `None` for all; it re-queries the daemon
+    /// because it changes the GraphQL search qualifier.
+    #[tauri::command]
+    pub async fn prs_list(
+        account_id: Option<String>,
+        state: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call(
+            "prs.list",
+            serde_json::json!({ "account_id": account_id, "state": state }),
+        )
+        .await
+        .map_err(|e| e.to_string())
     }
 
     // ---- conflict resolution (`specs/conflict-resolver.md`) --------------
