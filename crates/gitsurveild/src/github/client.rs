@@ -31,10 +31,14 @@ pub enum NotificationsPoll {
 
 /// A GitHub API client scoped to one account (one host, one token).
 pub struct GitHubClient {
-    account_id: String,
+    /// Account id this client was built for; stamped onto every result row
+    /// so multi-account lists can't be attributed to the wrong account.
+    pub(crate) account_id: String,
     api_base: String,
     http: reqwest::Client,
-    octocrab: octocrab::Octocrab,
+    /// `octocrab`'s GraphQL transport, shared by the poller's search and the
+    /// PR view's `list_pull_requests`.
+    pub(crate) octocrab: octocrab::Octocrab,
 }
 
 impl GitHubClient {
