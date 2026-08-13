@@ -4,16 +4,18 @@
 //! `accounts.{add,list,remove}`, `rules.list`, and `poll.now`. Later phases
 //! add more `match` arms to [`dispatch`] without touching the transport code.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use chrono::Utc;
-use gitsurveil_proto::{AccountRef, AuthKind, Request, Response, StatusResult};
+use gitsurveil_proto::{AccountRef, AuthKind, ConflictSession, Request, Response, StatusResult};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::config::{Config, RepoConfig};
+use crate::conflicts::session::{PrepareInputs, Session};
 use crate::error::{DaemonError, Result};
 use crate::github::GitHubClient;
 use crate::keychain;
@@ -34,6 +36,13 @@ pub struct ServerState {
     pub config: Mutex<Config>,
     /// Where [`Config::save`] writes, so the API can persist its own changes.
     pub config_path: PathBuf,
+    /// Live conflict-resolution sessions (`specs/conflict-resolver.md`),
+    /// keyed by `"owner/name"` — one per repo, in memory only, torn down on
+    /// daemon restart.
+    pub sessions: Mutex<HashMap<String, Session>>,
+    /// The daemon data dir; temp worktrees for conflict sessions are created
+    /// under it, never inside the user's clone (AC-1.3).
+    pub data_dir: PathBuf,
 }
 
 /// Params for `items.list`. All fields optional; an absent field means "no
@@ -138,6 +147,51 @@ struct AccountsAddParams {
     token: String,
 }
 
+/// Params for `conflicts.prepare`.
+#[derive(Debug, Deserialize)]
+struct ConflictsPrepareParams {
+    /// Which account's credentials to act with. Defaults to the only
+    /// configured account when omitted.
+    #[serde(default)]
+    account_id: Option<String>,
+    /// `"owner/name"`.
+    repo: String,
+    /// PR number.
+    number: u64,
+}
+
+/// Params for `conflicts.file`.
+#[derive(Debug, Deserialize)]
+struct ConflictsFileParams {
+    session_id: String,
+    path: String,
+}
+
+/// Params for `conflicts.save`. Exactly one of `content` (full resolved text)
+/// or `pick` (`"ours"`/`"theirs"`, whole-file copy) must be present.
+#[derive(Debug, Deserialize)]
+struct ConflictsSaveParams {
+    session_id: String,
+    path: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    pick: Option<String>,
+}
+
+/// Params for `conflicts.commit`.
+#[derive(Debug, Deserialize)]
+struct ConflictsCommitParams {
+    session_id: String,
+    message: String,
+}
+
+/// Params for `conflicts.abort` and `conflicts.push`.
+#[derive(Debug, Deserialize)]
+struct ConflictsSessionIdParams {
+    session_id: String,
+}
+
 /// Dispatches one decoded [`Request`] to the matching daemon capability and
 /// returns its [`Response`]. Kept as a single flat `match` — one method per
 /// arm, no framework — per `CLAUDE.md`'s "no frameworks in the daemon" rule.
@@ -156,6 +210,12 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "repos.list" => handle_repos_list(state),
         "repos.set" => handle_repos_set(state, req.params).await,
         "repos.remove" => handle_repos_remove(state, req.params).await,
+        "conflicts.prepare" => handle_conflicts_prepare(state, req.params).await,
+        "conflicts.file" => handle_conflicts_file(state, req.params).await,
+        "conflicts.save" => handle_conflicts_save(state, req.params).await,
+        "conflicts.commit" => handle_conflicts_commit(state, req.params).await,
+        "conflicts.push" => handle_conflicts_push(state, req.params).await,
+        "conflicts.abort" => handle_conflicts_abort(state, req.params).await,
         "pr.detail" => handle_pr(state, req.params, PrAction::Detail).await,
         "pr.create" => handle_pr(state, req.params, PrAction::Create).await,
         "pr.update" => handle_pr(state, req.params, PrAction::Update).await,
@@ -408,6 +468,221 @@ async fn handle_repos_remove(state: &ServerState, params: serde_json::Value) -> 
     Ok(serde_json::to_value(&config.repos).expect("Vec<RepoConfig> always serializes"))
 }
 
+/// Runs one conflict-resolver step against a session, in a blocking thread
+/// (git2 types are `!Send`, and this module never holds a `Repository` across
+/// an `.await`). A panicked blocking thread surfaces as an `io_error`.
+async fn run_git_op<F, T>(op: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(op)
+        .await
+        .map_err(|e| DaemonError::Io(std::io::Error::other(e)))?
+}
+
+/// Clones a live session out of the map by id. Missing means the session was
+/// aborted or the daemon restarted — a clear error beats a silent no-op for
+/// every method except `abort`, which treats absence as success.
+fn session_from(sessions: &Mutex<HashMap<String, Session>>, id: &str) -> Result<Session> {
+    sessions
+        .lock()
+        .expect("sessions mutex poisoned")
+        .get(id)
+        .cloned()
+        .ok_or_else(|| DaemonError::InvalidParams(format!("no active conflict session for {id}")))
+}
+
+/// `conflicts.prepare` — fetch, clean-check, temp worktree, merge the base in.
+/// Returns the session plus the conflicted file list (`specs/conflict-resolver.md`
+/// flow steps 1–2). One session per repo: a live one rejects a second prepare
+/// (AC-2.4).
+async fn handle_conflicts_prepare(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: ConflictsPrepareParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    if !is_repo_slug(&params.repo) {
+        return Err(DaemonError::InvalidParams(format!(
+            "repo must be \"owner/name\", got {:?}",
+            params.repo
+        )));
+    }
+    let clone_path = state
+        .config
+        .lock()
+        .expect("config mutex poisoned")
+        .repos
+        .iter()
+        .find(|r| r.repo == params.repo)
+        .map(|r| r.path.clone())
+        .ok_or_else(|| {
+            DaemonError::Config(format!(
+                "no local clone configured for {} — add one in Settings",
+                params.repo
+            ))
+        })?;
+
+    {
+        let sessions = state.sessions.lock().expect("sessions mutex poisoned");
+        if sessions.contains_key(&params.repo) {
+            return Err(DaemonError::Config(format!(
+                "a conflict resolution for {} is already in progress — abort or push it first",
+                params.repo
+            )));
+        }
+    }
+
+    let accounts = state.store.list_accounts()?;
+    let account = match &params.account_id {
+        Some(id) => accounts
+            .iter()
+            .find(|a| &a.id == id)
+            .ok_or_else(|| DaemonError::UnknownAccount(id.clone()))?,
+        None => accounts
+            .first()
+            .ok_or_else(|| DaemonError::InvalidParams("no account configured".into()))?,
+    };
+    let token = keychain::get_token(&account.id)?
+        .ok_or_else(|| DaemonError::UnknownAccount(account.id.clone()))?;
+    let client = GitHubClient::new(&account.id, &account.api_base, &token)?;
+    let detail = client.pr_detail(&params.repo, params.number).await?;
+
+    let inputs = PrepareInputs {
+        repo: params.repo.clone(),
+        base: detail.base.clone(),
+        head: detail.head.clone(),
+        clone_path,
+        worktree_root: state.data_dir.clone(),
+        login: account.login.clone(),
+        token,
+    };
+    let (session, files) = run_git_op(move || crate::conflicts::session::prepare(&inputs)).await?;
+
+    state
+        .sessions
+        .lock()
+        .expect("sessions mutex poisoned")
+        .insert(session.id.clone(), session.clone());
+    Ok(serde_json::to_value(ConflictSession {
+        session_id: session.id,
+        repo: params.repo,
+        number: params.number,
+        base: detail.base,
+        head: detail.head,
+        worktree_path: session.worktree_path.to_string_lossy().into_owned(),
+        files,
+    })
+    .expect("ConflictSession always serializes"))
+}
+
+/// `conflicts.file` — the conflict regions of one file, read from the worktree
+/// so it always reflects the latest `conflicts.save` (AC-4.3).
+async fn handle_conflicts_file(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: ConflictsFileParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let session = session_from(&state.sessions, &params.session_id)?;
+    let path = params.path;
+    let file = run_git_op(move || crate::conflicts::session::read_file(&session, &path)).await?;
+    Ok(serde_json::to_value(file).expect("ConflictFile always serializes"))
+}
+
+/// `conflicts.save` — writes resolved text, or copies a whole file from one
+/// side of the index (the only resolution path for binary and >5 MB files).
+async fn handle_conflicts_save(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: ConflictsSaveParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let session = session_from(&state.sessions, &params.session_id)?;
+    let path = params.path;
+    match (params.content, params.pick.as_deref()) {
+        (Some(content), None) => {
+            run_git_op(move || crate::conflicts::session::save_file(&session, &path, &content))
+                .await?;
+        }
+        (None, Some("ours")) => {
+            run_git_op(move || crate::conflicts::session::pick_file(&session, &path, true)).await?;
+        }
+        (None, Some("theirs")) => {
+            run_git_op(move || crate::conflicts::session::pick_file(&session, &path, false))
+                .await?;
+        }
+        (None, Some(other)) => {
+            return Err(DaemonError::InvalidParams(format!(
+                "pick must be \"ours\" or \"theirs\", got {other:?}"
+            )));
+        }
+        (Some(_), Some(_)) => {
+            return Err(DaemonError::InvalidParams(
+                "pass either content or pick, not both".into(),
+            ));
+        }
+        (None, None) => {
+            return Err(DaemonError::InvalidParams(
+                "content or pick is required".into(),
+            ));
+        }
+    }
+    Ok(serde_json::Value::Null)
+}
+
+/// `conflicts.commit` — stages the resolved files and creates the merge
+/// commit. Refuses while any file still contains conflict markers (AC-4.4).
+async fn handle_conflicts_commit(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: ConflictsCommitParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let session = session_from(&state.sessions, &params.session_id)?;
+    let message = params.message;
+    run_git_op(move || crate::conflicts::session::commit_resolution(&session, &message)).await?;
+    Ok(serde_json::Value::Null)
+}
+
+/// `conflicts.push` — pushes the resolution branch to the PR head and, on
+/// success, tears the worktree down and drops the session.
+async fn handle_conflicts_push(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: ConflictsSessionIdParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let session = session_from(&state.sessions, &params.session_id)?;
+    run_git_op(move || crate::conflicts::session::push_resolution(&session)).await?;
+    state
+        .sessions
+        .lock()
+        .expect("sessions mutex poisoned")
+        .remove(&params.session_id);
+    Ok(serde_json::Value::Null)
+}
+
+/// `conflicts.abort` — tears down the worktree and drops the session.
+/// Idempotent: an already-absent session is success, not an error (AC-2.2).
+async fn handle_conflicts_abort(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: ConflictsSessionIdParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let session = state
+        .sessions
+        .lock()
+        .expect("sessions mutex poisoned")
+        .remove(&params.session_id);
+    if let Some(session) = session {
+        run_git_op(move || crate::conflicts::session::abort(&session)).await?;
+    }
+    Ok(serde_json::Value::Null)
+}
+
 /// Whether `repo` looks like `"owner/name"`: exactly one `/`, neither part
 /// empty. GitHub repo slugs can't contain another `/`.
 fn is_repo_slug(repo: &str) -> bool {
@@ -576,6 +851,7 @@ async fn handle_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git2::Repository;
     use gitsurveil_proto::{AccountRef, AuthKind};
 
     fn test_state() -> ServerState {
@@ -585,6 +861,8 @@ mod tests {
             rules: Vec::new(),
             config: Mutex::new(Config::default()),
             config_path: PathBuf::from(""),
+            sessions: Mutex::new(HashMap::new()),
+            data_dir: std::env::temp_dir(),
         }
     }
 
@@ -810,5 +1088,176 @@ mod tests {
         )
         .await;
         assert!(resp.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn conflicts_prepare_rejects_a_repo_with_no_configured_clone() {
+        let state = test_state();
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 10,
+                method: "conflicts.prepare".into(),
+                params: serde_json::json!({ "repo": "acme/api", "number": 1 }),
+            },
+        )
+        .await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "config_error");
+        assert!(err.message.contains("no local clone configured"));
+    }
+
+    #[tokio::test]
+    async fn conflicts_abort_with_no_session_is_a_benign_no_op() {
+        let state = test_state();
+        // AC-2.2: aborting an unknown session must not error.
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 11,
+                method: "conflicts.abort".into(),
+                params: serde_json::json!({ "session_id": "acme/api" }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none());
+        assert!(resp.result.is_some());
+    }
+
+    #[tokio::test]
+    async fn conflicts_save_requires_content_or_pick() {
+        let state = test_state();
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 12,
+                method: "conflicts.save".into(),
+                params: serde_json::json!({ "session_id": "acme/api", "path": "file.txt" }),
+            },
+        )
+        .await;
+        assert_eq!(resp.error.unwrap().code, "invalid_params");
+    }
+
+    /// Builds an offline fixture (bare remote + clone with divergent branches)
+    /// so the conflicts handlers can run against a real session.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn conflict_fixture() -> (PathBuf, PathBuf, Session) {
+        let base = std::env::temp_dir().join(format!("gs-socket-{}", uuid::Uuid::new_v4()));
+        let clone = base.join("clone");
+        let worktree_root = base.join("worktrees");
+        std::fs::create_dir_all(&base).unwrap();
+        git(&base, &["init", "--bare", "-b", "main", "remote.git"]);
+        git(&base, &["clone", "remote.git", "clone"]);
+        git(&clone, &["config", "user.email", "test@example.com"]);
+        git(&clone, &["config", "user.name", "Test"]);
+        std::fs::write(clone.join("file.txt"), "base content\n").unwrap();
+        git(&clone, &["add", "."]);
+        git(&clone, &["commit", "-m", "initial"]);
+        git(&clone, &["push", "-u", "origin", "main"]);
+        git(&clone, &["checkout", "-b", "feature"]);
+        std::fs::write(clone.join("file.txt"), "feature content\n").unwrap();
+        git(&clone, &["commit", "-am", "feature change"]);
+        git(&clone, &["push", "-u", "origin", "feature"]);
+        git(&clone, &["checkout", "main"]);
+        std::fs::write(clone.join("file.txt"), "main content\n").unwrap();
+        git(&clone, &["commit", "-am", "main change"]);
+        git(&clone, &["push", "-u", "origin", "main"]);
+
+        let inputs = PrepareInputs {
+            repo: "acme/api".into(),
+            base: "main".into(),
+            head: "feature".into(),
+            clone_path: clone.clone(),
+            worktree_root: worktree_root.clone(),
+            login: "octocat".into(),
+            token: "test-token".into(),
+        };
+        let (session, _) = crate::conflicts::session::prepare(&inputs).unwrap();
+        (clone, base, session)
+    }
+
+    #[tokio::test]
+    async fn conflicts_round_trip_file_save_commit_abort() {
+        let state = test_state();
+        let (clone, base, session) = conflict_fixture();
+        state
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(session.id.clone(), session.clone());
+        let session_id = session.id;
+
+        // conflicts.file → segments present.
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 20,
+                method: "conflicts.file".into(),
+                params: serde_json::json!({ "session_id": session_id, "path": "file.txt" }),
+            },
+        )
+        .await;
+        let file = resp.result.unwrap();
+        assert!(
+            file["segments"].as_array().unwrap().len() > 0,
+            "file must report ordered segments"
+        );
+
+        // conflicts.save → a subsequent file reflects it (AC-4.3).
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 21,
+                method: "conflicts.save".into(),
+                params: serde_json::json!({
+                    "session_id": session_id,
+                    "path": "file.txt",
+                    "content": "resolved content\n"
+                }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none());
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 22,
+                method: "conflicts.commit".into(),
+                params: serde_json::json!({ "session_id": session_id, "message": "merge main" }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none(), "resolved commit must succeed");
+
+        // conflicts.abort tears the session down (AC-2.1).
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 23,
+                method: "conflicts.abort".into(),
+                params: serde_json::json!({ "session_id": session_id }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none());
+        assert!(state.sessions.lock().unwrap().is_empty());
+
+        // The clone itself was never disturbed.
+        let repo = Repository::open(&clone).unwrap();
+        assert_eq!(repo.head().unwrap().name().unwrap(), "refs/heads/main");
+        let _ = std::fs::remove_dir_all(base);
     }
 }

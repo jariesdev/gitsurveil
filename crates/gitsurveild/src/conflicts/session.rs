@@ -17,19 +17,17 @@
 //! 4. [`prune_orphaned`] is the startup hook: worktrees a crash left behind
 //!    are unregistered so they can't accumulate (AC-2.5).
 //!
-//! Public functions are wired into the socket layer in Step 4; until then the
-//! module is exercised only by its tests.
-
-#![allow(dead_code)]
+//! Public functions are wired into the socket layer (Step 4): `conflicts.*`
+//! methods call these behind `spawn_blocking`.
 
 use std::path::{Path, PathBuf};
 
 use git2::build::CheckoutBuilder;
 use git2::{
-    AnnotatedCommit, Cred, FetchOptions, MergeOptions, RemoteCallbacks, Repository, Status,
-    WorktreePruneOptions,
+    AnnotatedCommit, Cred, FetchOptions, MergeOptions, PushOptions, RemoteCallbacks, Repository,
+    Status, WorktreePruneOptions,
 };
-use gitsurveil_proto::ConflictFileSummary;
+use gitsurveil_proto::{ConflictFile, ConflictFileSummary};
 
 use crate::error::{DaemonError, Result};
 
@@ -46,8 +44,6 @@ const MAX_EDITABLE_BYTES: u64 = 5 * 1024 * 1024;
 pub struct PrepareInputs {
     /// `"owner/name"` as configured in `repos.set`.
     pub repo: String,
-    /// The pull request number.
-    pub number: u64,
     /// Base branch name (where the PR merges into).
     pub base: String,
     /// Head branch name (the PR's own branch).
@@ -64,13 +60,11 @@ pub struct PrepareInputs {
 }
 
 /// One live conflict-resolution session.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Session {
     /// The `"owner/name"` of the repo. Also the session id the API uses:
     /// there is exactly one session per repo, so the slug addresses it.
     pub id: String,
-    pub repo: String,
-    pub number: u64,
     pub base: String,
     pub head: String,
     pub clone_path: PathBuf,
@@ -79,6 +73,10 @@ pub struct Session {
     pub worktree_name: String,
     pub login: String,
     pub token: String,
+    /// Paths of the files this session must resolve. `conflicts.commit` checks
+    /// exactly these for leftover markers and stages exactly these — it never
+    /// touches anything else in the worktree.
+    pub conflicted_paths: Vec<String>,
 }
 
 /// Fetches origin, checks the user's clone is clean, creates the temp
@@ -132,12 +130,16 @@ pub fn prepare(inputs: &PrepareInputs) -> Result<(Session, Vec<ConflictFileSumma
     }
 }
 
-/// Removes a session's worktree and its directory. Idempotent: a missing
-/// worktree or directory is success, so `abort` can be called twice (AC-2.2)
-/// and a re-entrant teardown can't wedge.
+/// Removes a session's worktree, its directory, and the daemon's local branch
+/// for it. Idempotent: a missing worktree or directory is success, so `abort`
+/// can be called twice (AC-2.2) and a re-entrant teardown can't wedge.
 pub fn abort(session: &Session) -> Result<()> {
     let repo = Repository::open(&session.clone_path)?;
-    prune_worktree(&repo, &session.worktree_name, &session.worktree_path)
+    prune_worktree(&repo, &session.worktree_name, &session.worktree_path)?;
+    if let Ok(mut branch) = repo.find_branch(&session.worktree_name, git2::BranchType::Local) {
+        branch.delete().ok();
+    }
+    Ok(())
 }
 
 /// Unregisters every daemon-owned worktree in a clone. Run at startup against
@@ -164,6 +166,164 @@ pub fn prune_orphaned(clone_path: &Path) -> Result<()> {
 /// `gitsurveil-acme-api`. Used as the worktree's name, directory, and branch.
 pub fn worktree_name_for(repo: &str) -> String {
     format!("{WORKTREE_PREFIX}{}", repo.replace('/', "-"))
+}
+
+/// Reads one file from the worktree and parses its conflict regions
+/// (`conflicts.file`). Binary and over-threshold files return no segments —
+/// the UI offers whole-file pick for those instead (AC-5.5).
+pub fn read_file(session: &Session, path: &str) -> Result<ConflictFile> {
+    let full = worktree_file_path(session, path)?;
+    let bytes = std::fs::read(&full)?;
+    let binary = is_binary(&bytes);
+    let large = bytes.len() as u64 > MAX_EDITABLE_BYTES;
+    let segments = if binary || large {
+        Vec::new()
+    } else {
+        crate::conflicts::parse::parse_conflicts(&String::from_utf8_lossy(&bytes))
+    };
+    Ok(ConflictFile {
+        path: path.to_string(),
+        binary,
+        large,
+        segments,
+    })
+}
+
+/// Writes resolved content into a worktree file (`conflicts.save`). The
+/// content is byte-for-byte what the UI's center pane produced, so the file
+/// on disk always matches what a subsequent `conflicts.file` reports (AC-4.3)
+/// and ultimately what gets committed (AC-6.5).
+pub fn save_file(session: &Session, path: &str, content: &str) -> Result<()> {
+    let full = worktree_file_path(session, path)?;
+    std::fs::write(&full, content)?;
+    Ok(())
+}
+
+/// Copies one whole conflicted file from a side of the index into the
+/// worktree (`conflicts.save` with `pick`). This is the only way binary and
+/// >5 MB files can be resolved, since their content never enters the UI.
+/// `ours` is the PR head branch, `theirs` the base (matching the panes).
+pub fn pick_file(session: &Session, path: &str, ours: bool) -> Result<()> {
+    let repo = Repository::open(&session.worktree_path)?;
+    let index = repo.index()?;
+    let mut conflicts = index.conflicts()?;
+    while let Some(conflict) = conflicts.next() {
+        let conflict = conflict?;
+        let side = if ours {
+            conflict.our.as_ref()
+        } else {
+            conflict.their.as_ref()
+        };
+        if let Some(entry) = side {
+            let entry_path = String::from_utf8_lossy(&entry.path).into_owned();
+            if entry_path == path {
+                let blob = repo.find_blob(entry.id)?;
+                let full = worktree_file_path(session, path)?;
+                std::fs::write(&full, blob.content())?;
+                return Ok(());
+            }
+        }
+    }
+    Err(DaemonError::Config(format!(
+        "{path} is not a conflicted file in this session"
+    )))
+}
+
+/// Stages the resolved files and creates the merge commit. Refuses a commit
+/// while any conflicted file still contains marker lines — the daemon-side
+/// guard against pushing `<<<<<<<` to a shared branch (AC-4.4, release
+/// blocker). Leaves the worktree in place: `conflicts.push` owns the teardown,
+/// so `abort` stays possible from every state (AC-2.3).
+pub fn commit_resolution(session: &Session, message: &str) -> Result<()> {
+    if message.trim().is_empty() {
+        return Err(DaemonError::InvalidParams(
+            "a commit message is required".into(),
+        ));
+    }
+    let repo = Repository::open(&session.worktree_path)?;
+    for path in &session.conflicted_paths {
+        let content = std::fs::read(worktree_file_path(session, path)?)?;
+        if contains_markers(&String::from_utf8_lossy(&content)) {
+            return Err(DaemonError::Config(format!(
+                "{path} still contains conflict markers — resolve it before committing"
+            )));
+        }
+    }
+    let signature = repo.signature().map_err(|_| {
+        DaemonError::Config(
+            "the clone has no git identity — set user.name and user.email in its config".into(),
+        )
+    })?;
+
+    let mut index = repo.index()?;
+    for path in &session.conflicted_paths {
+        index.add_path(Path::new(path))?;
+    }
+    index.write()?;
+    let tree = repo.find_tree(index.write_tree_to(&repo)?)?;
+
+    let head_ref = format!("refs/remotes/origin/{}", session.head);
+    let base_ref = format!("refs/remotes/origin/{}", session.base);
+    let head = repo.find_reference(&head_ref)?.peel_to_commit()?;
+    let base = repo.find_reference(&base_ref)?.peel_to_commit()?;
+
+    let branch_ref = format!("refs/heads/{}", session.worktree_name);
+    repo.commit(
+        Some(&branch_ref),
+        &signature,
+        &signature,
+        message,
+        &tree,
+        &[&head, &base],
+    )?;
+    Ok(())
+}
+
+/// Pushes the resolution branch to the PR's head on origin. On success the
+/// worktree, its branch, and (via the socket layer) the session are torn down.
+/// On rejection nothing is torn down — the user can fix and retry or abort —
+/// and git's error is surfaced with the token scrubbed (AC-4.5, AC-4.8).
+pub fn push_resolution(session: &Session) -> Result<()> {
+    let repo = Repository::open(&session.clone_path)?;
+    let mut remote = repo
+        .find_remote("origin")
+        .map_err(|e| DaemonError::Config(format!("no `origin` remote: {e}")))?;
+    let mut callbacks = RemoteCallbacks::new();
+    let token = session.token.clone();
+    let login = session.login.clone();
+    callbacks.credentials(move |_url, username, _allowed| {
+        Cred::userpass_plaintext(username.unwrap_or(&login), &token)
+    });
+    let mut options = PushOptions::new();
+    options.remote_callbacks(callbacks);
+    let refspec = format!(
+        "refs/heads/{}:refs/heads/{}",
+        session.worktree_name, session.head
+    );
+    remote
+        .push(&[refspec], Some(&mut options))
+        .map_err(|e| DaemonError::Config(scrub_token(&e.to_string(), &session.token)))?;
+    abort(session)
+}
+
+/// Whether text still contains unresolved conflict marker lines. The commit
+/// gate checks this directly rather than trusting the parser, so even a
+/// malformed block the parser degrades to context still blocks the commit.
+fn contains_markers(content: &str) -> bool {
+    content
+        .lines()
+        .any(|line| line.starts_with("<<<<<<<") || line.starts_with(">>>>>>>"))
+}
+
+/// Resolves a worktree-relative path and rejects anything that would escape
+/// the worktree root (a session address can't legitimately contain `..`).
+fn worktree_file_path(session: &Session, path: &str) -> Result<PathBuf> {
+    if path.split('/').any(|part| part == "..") {
+        return Err(DaemonError::InvalidParams(format!(
+            "{path:?} escapes the worktree"
+        )));
+    }
+    Ok(session.worktree_path.join(path))
 }
 
 /// Performs the parts of `prepare` that run after the worktree exists: point
@@ -224,8 +384,6 @@ fn setup_worktree(
     Ok((
         Session {
             id: inputs.repo.clone(),
-            repo: inputs.repo.clone(),
-            number: inputs.number,
             base: inputs.base.clone(),
             head: inputs.head.clone(),
             clone_path: inputs.clone_path.clone(),
@@ -233,6 +391,7 @@ fn setup_worktree(
             worktree_name: worktree_name.to_string(),
             login: inputs.login.clone(),
             token: inputs.token.clone(),
+            conflicted_paths: files.iter().map(|f| f.path.clone()).collect(),
         },
         files,
     ))
@@ -429,7 +588,6 @@ mod tests {
     fn inputs(fixture: &Fixture) -> PrepareInputs {
         PrepareInputs {
             repo: "acme/api".into(),
-            number: 1,
             base: "main".into(),
             head: "feature".into(),
             clone_path: fixture.clone.clone(),
@@ -534,6 +692,81 @@ mod tests {
         let repo = Repository::open(&fixture.clone).unwrap();
         let names: Vec<String> = repo.worktrees().unwrap().iter().filter_map(|n| n.ok().flatten().map(str::to_owned)).collect();
         assert!(!names.iter().any(|n| n.starts_with(WORKTREE_PREFIX)));
+        cleanup(&fixture);
+    }
+
+    #[test]
+    fn commit_refuses_leftover_markers_and_then_commits_a_resolution() {
+        let fixture = fixture();
+        let (session, _) = prepare(&inputs(&fixture)).unwrap();
+
+        // Leave the conflicted file untouched → the commit gate must refuse it.
+        let err = commit_resolution(&session, "merge main").unwrap_err();
+        assert!(
+            err.to_string().contains("still contains conflict markers"),
+            "commit must refuse unresolved markers, got: {err}"
+        );
+
+        // Resolve it (take "theirs") and commit.
+        pick_file(&session, "file.txt", false).unwrap();
+        commit_resolution(&session, "merge main").expect("a resolved commit should succeed");
+
+        let repo = Repository::open(&session.worktree_path).unwrap();
+        let head = repo.head().unwrap();
+        let commit = head.peel_to_commit().unwrap();
+        assert_eq!(
+            commit.parent_count(),
+            2,
+            "the resolution commit must merge head + base"
+        );
+        let message = commit.message().unwrap();
+        assert_eq!(message, "merge main");
+
+        abort(&session).unwrap();
+        cleanup(&fixture);
+    }
+
+    #[test]
+    fn save_persists_then_file_reports_the_new_content() {
+        let fixture = fixture();
+        let (session, files) = prepare(&inputs(&fixture)).unwrap();
+        let path = files[0].path.clone();
+
+        let before = read_file(&session, &path).unwrap();
+        assert!(!before.segments.is_empty(), "a conflicted file has segments");
+
+        save_file(&session, &path, "resolved content\n").unwrap();
+        let after = read_file(&session, &path).unwrap();
+        assert!(
+            after.segments.is_empty() || after.segments.iter().all(|s| matches!(s, gitsurveil_proto::ConflictSegment::Context { .. })),
+            "saved content must parse back with no conflict hunks"
+        );
+
+        abort(&session).unwrap();
+        cleanup(&fixture);
+    }
+
+    #[test]
+    fn push_ships_the_resolution_to_origin_and_tears_down() {
+        let fixture = fixture();
+        let (session, _) = prepare(&inputs(&fixture)).unwrap();
+        pick_file(&session, "file.txt", false).unwrap();
+        commit_resolution(&session, "merge main").unwrap();
+
+        push_resolution(&session).expect("push to the bare origin should succeed");
+
+        assert!(!session.worktree_path.exists(), "worktree must be torn down after push");
+        let repo = Repository::open(&fixture.clone).unwrap();
+        let names: Vec<String> = repo.worktrees().unwrap().iter().filter_map(|n| n.ok().flatten().map(str::to_owned)).collect();
+        assert!(!names.iter().any(|n| n.starts_with(WORKTREE_PREFIX)));
+
+        // origin/feature must now point at the resolution commit.
+        let remote = repo.find_reference("refs/remotes/origin/feature").unwrap();
+        assert_eq!(
+            remote.peel_to_commit().unwrap().message().unwrap(),
+            "merge main",
+            "the pushed branch must carry the resolution commit"
+        );
         cleanup(&fixture);
     }
 }

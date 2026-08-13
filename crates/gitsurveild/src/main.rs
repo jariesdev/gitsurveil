@@ -69,6 +69,8 @@ async fn run() -> error::Result<()> {
         rules: config.rules.clone(),
         config: std::sync::Mutex::new(config.clone()),
         config_path: config_path.clone(),
+        sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
+        data_dir: data_dir.clone(),
     });
 
     // Sessions are in-memory only, so a daemon restart orphans any worktrees
