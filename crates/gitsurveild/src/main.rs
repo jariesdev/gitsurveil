@@ -71,6 +71,16 @@ async fn run() -> error::Result<()> {
         config_path: config_path.clone(),
     });
 
+    // Sessions are in-memory only, so a daemon restart orphans any worktrees
+    // a previous run created. Prune them before the server accepts requests
+    // (specs/conflict-resolver.md AC-2.5).
+    for repo in &config.repos {
+        match conflicts::session::prune_orphaned(&repo.path) {
+            Ok(()) => tracing::debug!(repo = %repo.repo, "pruned orphaned conflict worktrees"),
+            Err(e) => tracing::warn!(repo = %repo.repo, "could not prune orphaned conflict worktrees: {e}"),
+        }
+    }
+
     let poll_handle = tokio::spawn(poller::run(
         Arc::clone(&store),
         config.rules,

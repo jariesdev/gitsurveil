@@ -25,6 +25,10 @@ pub enum DaemonError {
     /// Config file could not be read or parsed.
     #[error("config error: {0}")]
     Config(String),
+    /// Local git operation failed (clone validation, conflict sessions).
+    /// Maps to `config_error` per the conflict-resolver spec's AC-4.7.
+    #[error("git error: {0}")]
+    Git(#[from] git2::Error),
     /// I/O failure (socket, file).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -50,6 +54,7 @@ impl DaemonError {
             DaemonError::GitHubApi(_) => "github_error",
             DaemonError::Keychain(_) => "keychain_error",
             DaemonError::Config(_) => "config_error",
+            DaemonError::Git(_) => "config_error",
             DaemonError::Io(_) => "io_error",
             DaemonError::UnknownAccount(_) => "unknown_account",
             DaemonError::UnknownMethod(_) => "unknown_method",
