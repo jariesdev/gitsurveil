@@ -27,13 +27,15 @@ import type {
 import { Accounts } from "./Accounts";
 import { Dashboard } from "./Dashboard";
 import { ItemRow } from "./ItemRow";
+import { PullRequests } from "./PullRequests/PullRequests";
 import { Repos } from "./Repos";
 import { Rules } from "./Rules";
 
-type View = "dashboard" | "history" | "rules" | "repos" | "accounts";
+type View = "dashboard" | "pull-requests" | "history" | "rules" | "repos" | "accounts";
 
 const NAV: { id: View; label: string }[] = [
   { id: "dashboard", label: "Dashboard" },
+  { id: "pull-requests", label: "Pull Requests" },
   { id: "history", label: "History" },
   { id: "rules", label: "Rules" },
   { id: "repos", label: "Repositories" },
@@ -160,6 +162,7 @@ export function App() {
           {view === "history" && (
             <History items={data.history} onRefresh={() => void load()} />
           )}
+          {view === "pull-requests" && <PullRequests accounts={data.accounts} />}
           {view === "rules" && <Rules rules={data.rules} />}
           {view === "repos" && (
             <Repos repos={data.repos} onChange={() => void load()} />
