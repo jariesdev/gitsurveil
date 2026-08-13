@@ -4,3 +4,4 @@ node_modules
 
 # Tauri's generated schemas/capabilities output
 crates/gitsurveil-app/gen
+/crates/gitsurveil-app/binaries

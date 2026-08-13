@@ -21,6 +21,11 @@
     "targets": "all",
     "icon": [
       "icons/icon.png"
-    ]
+    ],
+    "externalBin": [
+      "binaries/gitsurveild"
+    ],
+    "shortDescription": "GitHub action-item monitor",
+    "longDescription": "Monitors GitHub for the pull requests, reviews, mentions and build failures that need you, and tells you only when something outranks what you are already doing."
   }
 }
