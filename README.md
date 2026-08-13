@@ -10,10 +10,11 @@ GitHub directly with your own token, and no data goes anywhere else.
 
 ## Status
 
-**Early development.** Phases 1–6 of 9 are done: the daemon monitors GitHub,
+**Early development.** Phases 1–7 of 9 are done: the daemon monitors GitHub,
 prioritizes what it finds, and notifies you; a menubar app shows what's
-pending; and a desktop window provides the dashboard, history, rules, accounts,
-and pull-request management. The conflict resolver comes next.
+pending; a desktop window provides the dashboard, history, rules, accounts,
+pull-request management, and a three-pane conflict resolver that lets you merge
+a conflicted PR from within the app.
 
 | Phase | Feature | Status |
 |---|---|---|
@@ -23,7 +24,7 @@ and pull-request management. The conflict resolver comes next.
 | 4 | Priority engine (scoring, severity tray, outrank gate) | ✅ Done |
 | 5 | Full desktop UI (dashboard, rules, accounts) | ✅ Done |
 | 6 | PR management (create/update/close/merge, comments) | ✅ Done |
-| 7 | Conflict resolver (3-pane, Sublime Merge-style) | Not started |
+| 7 | Conflict resolver (3-pane, Sublime Merge-style) | ✅ Done |
 | 8 | AI PR review (opt-in; Ollama or Claude) | Not started |
 | 9 | Service registration & packaging | Not started |
 
@@ -167,6 +168,9 @@ opens the full window:
 - **History** — resolved and dismissed items, with the option to restore a
   dismissal.
 - **Rules** — how scoring works, and what your configured rules do.
+- **Repositories** — local clone paths the conflict resolver uses. Resolution
+  always happens on a throwaway worktree cloned from this path, never in your
+  working tree.
 - **Accounts** — add or remove accounts.
 
 Clicking a pull request opens a detail pane beside the list: description,
@@ -174,6 +178,28 @@ reviewers, checks, and the full conversation, with buttons to edit the title
 and body, comment, close, or merge (merge commit, squash, or rebase). Merging
 and closing ask for confirmation first, and a merge is rejected by GitHub if
 the branch moved since the pane loaded it.
+
+### Resolving merge conflicts
+
+When a PR is conflicted with its base branch, the detail pane shows **Resolve
+conflicts**. Clicking it starts a resolution session:
+
+1. The daemon makes a temp worktree from the repo's configured clone, merges
+   the base branch into the PR branch there, and lists every conflicted file.
+   Your local clone is never touched.
+2. For each file you get a three-pane editor: the PR branch's side, the base
+   branch's side, and the editable result. Each conflict starts as its raw
+   marker block; **Use ours / Use theirs / Use both** replace it, or you hand-edit.
+3. Save each file (a file counts as resolved once its text holds no markers),
+   then **Commit resolution**. The daemon refuses to commit if any marker is
+   left.
+4. **Push & finish** pushes the resolution to the PR's branch and tears the
+   worktree down. **Abort** throws the session away at any point — again,
+   nothing but the worktree is touched.
+
+Binary files and files over 5 MB skip the editor and offer a whole-file
+**Keep ours / Keep theirs** instead. One session per repo: starting another
+while one is live tells you to finish or abort the first.
 
 Quitting the app leaves the daemon running, so notifications keep arriving.
 
@@ -203,6 +229,13 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `pr.close` / `pr.merge` | Close without merging, or merge |
 | `pr.comments` / `pr.comment` | Read the conversation, or post to it |
 | `pr.branches` | Branch names, for the create-PR form |
+| `repos.list` / `repos.set` / `repos.remove` | Local clone paths for the conflict resolver |
+| `conflicts.prepare` | Start a resolution session (temp worktree) |
+| `conflicts.file` | One conflicted file's segments, from the worktree |
+| `conflicts.save` | Write resolved content, or pick a whole-file side |
+| `conflicts.commit` | Create the resolution merge commit |
+| `conflicts.push` | Push the resolution and tear the session down |
+| `conflicts.abort` | Abandon the session (idempotent) |
 
 More methods land with each phase — see `specs/daemon.md` for the full planned
 surface.
