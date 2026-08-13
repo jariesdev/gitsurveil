@@ -25,6 +25,7 @@ function pr(overrides: Partial<PullRequestSummary> = {}): PullRequestSummary {
     draft: false,
     ci_status: "none",
     review_decision: "none",
+    unresolved_threads: 0,
     mergeability: "clean",
     created_at: "2026-08-13T12:00:00Z",
     updated_at: "2026-08-13T12:00:00Z",

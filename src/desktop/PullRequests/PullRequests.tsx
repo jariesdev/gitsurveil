@@ -18,7 +18,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { listPullRequests, listRepos } from "../../ipc";
+import { listPullRequests, listRepos, openUrl } from "../../ipc";
+import { ContextMenu } from "../ContextMenu";
 import type {
   AccountRef,
   PrRole,
@@ -86,6 +87,12 @@ export function PullRequests({
   const [noClone, setNoClone] = useState<{ repo: string; number: number } | null>(
     null,
   );
+  /** The row's right-click menu, anchored to where the cursor was. */
+  const [menu, setMenu] = useState<{
+    pr: PullRequestSummary;
+    x: number;
+    y: number;
+  } | null>(null);
 
   const load = useCallback(async (state: PrState | "") => {
     setBusy(true);
@@ -222,7 +229,13 @@ export function PullRequests({
             <ul>
               {visible.map((pr) => (
                 <li key={`${pr.repo}#${pr.number}`}>
-                  <div className="flex items-center gap-3 border-b border-neutral-200 px-4 py-2 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50">
+                  <div
+                    className="flex items-center gap-3 border-b border-neutral-200 px-4 py-2 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50"
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setMenu({ pr, x: event.clientX, y: event.clientY });
+                    }}
+                  >
                     <button
                       type="button"
                       onClick={() => setSelected({ repo: pr.repo, number: pr.number })}
@@ -286,6 +299,18 @@ export function PullRequests({
                       >
                         Resolve conflicts
                       </button>
+                    )}
+
+                    {pr.unresolved_threads > 0 && (
+                      <span
+                        className="relative shrink-0"
+                        title={`${pr.unresolved_threads} unresolved review thread${pr.unresolved_threads === 1 ? "" : "s"}`}
+                      >
+                        <ChatBubbleIcon className="h-4 w-4 text-neutral-500 dark:text-neutral-400" />
+                        <span className="absolute -right-1.5 -top-1.5 min-w-3.5 rounded-full bg-amber-400 px-0.5 text-center text-[9px] font-semibold leading-3.5 tabular-nums text-amber-950">
+                          {pr.unresolved_threads}
+                        </span>
+                      </span>
                     )}
 
                     <span
@@ -356,6 +381,23 @@ export function PullRequests({
           />
         </div>
       )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: `Open in ${accountProvider(accounts, menu.pr.account_id)}`,
+              onSelect: () => {
+                void openUrl(menu.pr.url);
+                setMenu(null);
+              },
+            },
+          ]}
+        />
+      )}
     </div>
   );
 }
@@ -363,6 +405,34 @@ export function PullRequests({
 /** The login for an account id, falling back to a truncated id. */
 function accountLogin(accounts: AccountRef[], id: string): string {
   return accounts.find((a) => a.id === id)?.login ?? id;
+}
+
+/** The provider display name for the account a PR belongs to: GitHub and
+ * GitLab by well-known host, otherwise the host itself (e.g. a GitHub
+ * Enterprise hostname). Falls back to "browser" when the account is unknown. */
+function accountProvider(accounts: AccountRef[], id: string): string {
+  const host = accounts.find((a) => a.id === id)?.host;
+  if (host === "github.com") return "GitHub";
+  if (host === "gitlab.com") return "GitLab";
+  return host ?? "browser";
+}
+
+/** A chat bubble, marking how many unresolved review threads a PR has. */
+function ChatBubbleIcon({ className }: { className: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" />
+    </svg>
+  );
 }
 
 /** Human label for a non-trivial review decision. */
