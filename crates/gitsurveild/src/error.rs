@@ -14,6 +14,11 @@ pub enum DaemonError {
     /// GitHub API call failed.
     #[error("github api error: {0}")]
     GitHub(#[from] octocrab::Error),
+    /// GitHub rejected a REST request. Carries GitHub's own message, which is
+    /// the part that tells the user what to do ("Validation Failed", which
+    /// scope is missing), so it is surfaced verbatim.
+    #[error("{0}")]
+    GitHubApi(String),
     /// OS keychain access failed.
     #[error("keychain error: {0}")]
     Keychain(#[from] keyring::Error),
@@ -42,6 +47,7 @@ impl DaemonError {
         match self {
             DaemonError::Storage(_) => "storage_error",
             DaemonError::GitHub(_) => "github_error",
+            DaemonError::GitHubApi(_) => "github_error",
             DaemonError::Keychain(_) => "keychain_error",
             DaemonError::Config(_) => "config_error",
             DaemonError::Io(_) => "io_error",

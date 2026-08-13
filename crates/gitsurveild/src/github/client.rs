@@ -113,7 +113,7 @@ impl GitHubClient {
                 .ok()
                 .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
                 .unwrap_or_else(|| text.clone());
-            return Err(DaemonError::Config(format!("GitHub {status}: {detail}")));
+            return Err(DaemonError::GitHubApi(format!("GitHub {status}: {detail}")));
         }
 
         // A 204 (or any empty body) is a success with nothing to decode;
