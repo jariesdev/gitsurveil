@@ -10,7 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use chrono::Utc;
-use gitsurveil_proto::{AccountRef, AuthKind, ConflictSession, Request, Response, StatusResult};
+use gitsurveil_proto::{
+    AccountRef, AuthKind, ConflictSession, PrState, PullRequestSummary, Request, Response,
+    StatusResult,
+};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -110,6 +113,16 @@ impl PrParams {
             .map(String::as_str)
             .ok_or_else(|| DaemonError::InvalidParams(format!("{name} is required")))
     }
+}
+
+/// Params for `prs.list`. Without `account_id`, every configured account is
+/// queried and the results are concatenated. `state` is `None` for "all".
+#[derive(Debug, Deserialize)]
+struct PrsListParams {
+    #[serde(default)]
+    account_id: Option<String>,
+    #[serde(default)]
+    state: Option<PrState>,
 }
 
 /// Params for `items.history`.
@@ -224,6 +237,7 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "pr.comments" => handle_pr(state, req.params, PrAction::Comments).await,
         "pr.comment" => handle_pr(state, req.params, PrAction::Comment).await,
         "pr.branches" => handle_pr(state, req.params, PrAction::Branches).await,
+        "prs.list" => handle_prs_list(state, req.params).await,
         "poll.now" => handle_poll_now(state).await,
         other => Err(DaemonError::UnknownMethod(other.to_string())),
     };
@@ -352,6 +366,42 @@ async fn handle_pr(
     };
 
     value.map_err(|e| DaemonError::Config(e.to_string()))
+}
+
+/// `prs.list` — the Pull Requests view's data source.
+///
+/// A live query: one GraphQL request per configured account, concatenated.
+/// Never stored, never polled on a timer — the cost is bounded to a view
+/// open or a status refilter. See `specs/desktop-ui.md` for the filter
+/// contract (only `state` is a daemon-side qualifier; everything else is
+/// client-side).
+async fn handle_prs_list(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: PrsListParams = if params.is_null() {
+        PrsListParams { account_id: None, state: None }
+    } else {
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?
+    };
+
+    let accounts = state.store.list_accounts()?;
+    let accounts: Vec<&AccountRef> = match &params.account_id {
+        Some(id) => vec![accounts
+            .iter()
+            .find(|a| &a.id == id)
+            .ok_or_else(|| DaemonError::UnknownAccount(id.clone()))?],
+        None => accounts.iter().collect(),
+    };
+    if accounts.is_empty() {
+        return Ok(serde_json::json!([]));
+    }
+
+    let mut summaries: Vec<PullRequestSummary> = Vec::new();
+    for account in accounts {
+        let token = keychain::get_token(&account.id)?
+            .ok_or_else(|| DaemonError::UnknownAccount(account.id.clone()))?;
+        let client = GitHubClient::new(&account.id, &account.api_base, &token)?;
+        summaries.extend(client.list_pull_requests(params.state).await?);
+    }
+    Ok(serde_json::to_value(summaries).expect("Vec<PullRequestSummary> always serializes"))
 }
 
 fn handle_items_history(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
