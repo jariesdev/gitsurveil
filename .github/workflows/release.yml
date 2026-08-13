@@ -1,0 +1,104 @@
+name: Release
+
+# Tag-driven: `git tag v0.2.0 && git push origin v0.2.0`.
+# The tag is the only trigger, so a release is always a deliberate act.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple Silicon and Intel are separate targets; a universal binary
+          # would double every download for users who need only one half.
+          - os: macos-latest
+            label: macOS (Apple Silicon)
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            label: macOS (Intel)
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            label: Linux
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            label: Windows
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Must precede the bundle step: it stages gitsurveild where Tauri looks
+      # for a sidecar. Skip it and the installer ships the menubar app with no
+      # daemon, which looks to the user like a permanently broken service.
+      - name: Bundle the daemon as a sidecar
+        shell: bash
+        run: ./scripts/bundle-daemon.sh ${{ matrix.target }}
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: gitsurveil ${{ github.ref_name }}
+          releaseBody: |
+            Download the file for your platform below.
+
+            **macOS** — pick Apple Silicon or Intel. These builds are not
+            signed with an Apple Developer certificate, so the first launch is
+            blocked by Gatekeeper: right-click the app and choose **Open**, then
+            confirm. Subsequent launches are normal.
+
+            **Windows** — SmartScreen may warn for the same reason: choose
+            **More info → Run anyway**.
+
+            The background service ships inside the app. After installing, run
+            `gitsurveild install` from inside the app bundle to have it start at
+            login — see the README.
+          releaseDraft: true
+          prerelease: false
+          args: --config crates/gitsurveil-app/tauri.conf.json --target ${{ matrix.target }}
