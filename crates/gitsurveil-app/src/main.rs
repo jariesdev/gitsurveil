@@ -62,6 +62,14 @@ fn main() {
             commands::list_accounts,
             commands::list_rules,
             commands::poll_now,
+            commands::pr_detail,
+            commands::pr_create,
+            commands::pr_update,
+            commands::pr_close,
+            commands::pr_merge,
+            commands::pr_comments,
+            commands::pr_comment,
+            commands::pr_branches,
         ])
         .setup(|app| {
             // Menubar app, not a dock app: no dock icon, no app-switcher
@@ -338,5 +346,121 @@ mod commands {
     #[tauri::command]
     pub async fn poll_now() -> Result<(), String> {
         crate::daemon::poll_now().await.map_err(|e| e.to_string())
+    }
+
+    // ---- pull requests (`specs/pr-management.md`) --------------------
+    //
+    // Every mutating command below runs only from an explicit click in the
+    // UI. The daemon does the GitHub call; these just forward.
+
+    /// Full detail for one pull request.
+    #[tauri::command]
+    pub async fn pr_detail(repo: String, number: u64) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call("pr.detail", serde_json::json!({ "repo": repo, "number": number }))
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Creates a pull request.
+    #[tauri::command]
+    pub async fn pr_create(
+        repo: String,
+        base: String,
+        head: String,
+        title: String,
+        body: String,
+        draft: bool,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call(
+            "pr.create",
+            serde_json::json!({
+                "repo": repo, "base": base, "head": head,
+                "title": title, "body": body, "draft": draft,
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Applies a partial update to a pull request.
+    #[tauri::command]
+    pub async fn pr_update(
+        repo: String,
+        number: u64,
+        patch: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call(
+            "pr.update",
+            serde_json::json!({ "repo": repo, "number": number, "patch": patch }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Closes a pull request without merging.
+    #[tauri::command]
+    pub async fn pr_close(
+        repo: String,
+        number: u64,
+        comment: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call(
+            "pr.close",
+            serde_json::json!({ "repo": repo, "number": number, "comment": comment }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Merges a pull request. `head_sha` guards against merging a PR that
+    /// moved since the UI loaded it.
+    #[tauri::command]
+    pub async fn pr_merge(
+        repo: String,
+        number: u64,
+        method: String,
+        head_sha: String,
+        title: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call(
+            "pr.merge",
+            serde_json::json!({
+                "repo": repo, "number": number, "method": method,
+                "head_sha": head_sha, "title": title,
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// The conversation on a pull request.
+    #[tauri::command]
+    pub async fn pr_comments(repo: String, number: u64) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call("pr.comments", serde_json::json!({ "repo": repo, "number": number }))
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Posts a comment on a pull request.
+    #[tauri::command]
+    pub async fn pr_comment(
+        repo: String,
+        number: u64,
+        body: String,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call(
+            "pr.comment",
+            serde_json::json!({ "repo": repo, "number": number, "body": body }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Branch names in a repository, for the create-PR form.
+    #[tauri::command]
+    pub async fn pr_branches(repo: String) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call("pr.branches", serde_json::json!({ "repo": repo }))
+            .await
+            .map_err(|e| e.to_string())
     }
 }

@@ -3,5 +3,7 @@
 
 pub mod client;
 pub mod diff;
+pub mod pr;
 
 pub use client::GitHubClient;
+pub use pr::PrPatch;

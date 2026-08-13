@@ -17,6 +17,7 @@ import {
 } from "../types";
 import { applyFilters, groupItems, NO_FILTERS, type Filters } from "./grouping";
 import { ItemRow } from "./ItemRow";
+import { PrDetail } from "./PrDetail";
 
 /** Every item kind, in the order the filter dropdown lists them. */
 const ALL_KINDS: ItemKind[] = [
@@ -40,6 +41,10 @@ export function Dashboard({
   const [groupBy, setGroupBy] = useState<GroupBy>("priority");
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [busy, setBusy] = useState(false);
+  /** The PR whose detail pane is open, if any. */
+  const [selected, setSelected] = useState<{ repo: string; number: number } | null>(
+    null,
+  );
 
   const visible = useMemo(() => applyFilters(items, filters), [items, filters]);
   const groups = useMemo(() => groupItems(visible, groupBy), [visible, groupBy]);
@@ -62,7 +67,8 @@ export function Dashboard({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full">
+      <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
         <input
           type="search"
@@ -157,7 +163,16 @@ export function Dashboard({
                   <li key={item.id}>
                     <ItemRow
                       item={item}
-                      onOpen={() => void openUrl(item.url)}
+                      onOpen={() => {
+                        // Items without a number aren't pull requests (some
+                        // notification threads carry none), so there's nothing
+                        // for the detail pane to load — go to GitHub instead.
+                        if (item.number !== null) {
+                          setSelected({ repo: item.repo, number: item.number });
+                        } else {
+                          void openUrl(item.url);
+                        }
+                      }}
                       onDismiss={() => void handleDismiss(item.id)}
                     />
                   </li>
@@ -172,6 +187,17 @@ export function Dashboard({
         <footer className="border-t border-neutral-200 px-4 py-1.5 text-[11px] text-neutral-500 dark:border-neutral-800">
           {hiddenCount} item{hiddenCount === 1 ? "" : "s"} hidden by filters
         </footer>
+      )}
+      </div>
+
+      {selected && (
+        <PrDetail
+          key={`${selected.repo}#${selected.number}`}
+          repo={selected.repo}
+          number={selected.number}
+          onClose={() => setSelected(null)}
+          onChanged={onRefresh}
+        />
       )}
     </div>
   );

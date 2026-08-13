@@ -8,7 +8,15 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { AccountRef, Rule, ScoredItem, StatusResult } from "./types";
+import type {
+  AccountRef,
+  Comment,
+  MergeMethod,
+  PullRequestDetail,
+  Rule,
+  ScoredItem,
+  StatusResult,
+} from "./types";
 
 /**
  * Fetches every currently open action item, already scored and sorted
@@ -80,4 +88,79 @@ export function listRules(): Promise<Rule[]> {
 /** Asks the daemon to poll now rather than waiting for the next cycle. */
 export function pollNow(): Promise<void> {
   return invoke<void>("poll_now");
+}
+
+// ---- pull requests (`specs/pr-management.md`) ----------------------------
+// Every mutating call here runs only from an explicit click.
+
+/** Full detail for one pull request. */
+export function prDetail(repo: string, number: number): Promise<PullRequestDetail> {
+  return invoke<PullRequestDetail>("pr_detail", { repo, number });
+}
+
+/** Creates a pull request. */
+export function prCreate(args: {
+  repo: string;
+  base: string;
+  head: string;
+  title: string;
+  body: string;
+  draft: boolean;
+}): Promise<PullRequestDetail> {
+  return invoke<PullRequestDetail>("pr_create", args);
+}
+
+/** Applies a partial update; omitted fields are left unchanged. */
+export function prUpdate(
+  repo: string,
+  number: number,
+  patch: Partial<{
+    title: string;
+    body: string;
+    base: string;
+    draft: boolean;
+    labels: string[];
+    reviewers: string[];
+  }>,
+): Promise<PullRequestDetail> {
+  return invoke<PullRequestDetail>("pr_update", { repo, number, patch });
+}
+
+/** Closes a pull request without merging. */
+export function prClose(
+  repo: string,
+  number: number,
+  comment?: string,
+): Promise<void> {
+  return invoke<void>("pr_close", { repo, number, comment });
+}
+
+/** Merges a pull request. `headSha` guards against a PR that moved. */
+export function prMerge(
+  repo: string,
+  number: number,
+  method: MergeMethod,
+  headSha: string,
+  title?: string,
+): Promise<void> {
+  return invoke<void>("pr_merge", { repo, number, method, headSha, title });
+}
+
+/** The conversation on a pull request. */
+export function prComments(repo: string, number: number): Promise<Comment[]> {
+  return invoke<Comment[]>("pr_comments", { repo, number });
+}
+
+/** Posts a comment on a pull request. */
+export function prComment(
+  repo: string,
+  number: number,
+  body: string,
+): Promise<Comment> {
+  return invoke<Comment>("pr_comment", { repo, number, body });
+}
+
+/** Branch names in a repository, for the create-PR form. */
+export function prBranches(repo: string): Promise<string[]> {
+  return invoke<string[]>("pr_branches", { repo });
 }

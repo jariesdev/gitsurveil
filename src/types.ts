@@ -119,3 +119,51 @@ export interface Rule {
 
 /** How the dashboard groups items. */
 export type GroupBy = "priority" | "type";
+
+/** Whether a pull request can be merged as-is. */
+export type Mergeability = "clean" | "conflicted" | "blocked" | "unknown";
+
+/** How to merge a pull request. */
+export type MergeMethod = "merge" | "squash" | "rebase";
+
+/** A reviewer and the state of their review. */
+export interface Reviewer {
+  login: string;
+  state: string;
+}
+
+/** One CI check on the head commit. */
+export interface Check {
+  name: string;
+  conclusion: string;
+  url: string | null;
+}
+
+/** Everything the PR detail pane renders. */
+export interface PullRequestDetail {
+  repo: string;
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  draft: boolean;
+  base: string;
+  head: string;
+  author: string;
+  labels: string[];
+  reviewers: Reviewer[];
+  checks: Check[];
+  mergeability: Mergeability;
+  url: string;
+  /** Passed back on merge so a moved PR can't be merged by mistake. */
+  head_sha: string;
+}
+
+/** One comment in a pull request's conversation. */
+export interface Comment {
+  id: number;
+  author: string;
+  body: string;
+  created_at: string;
+  path: string | null;
+}

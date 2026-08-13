@@ -78,6 +78,85 @@ impl GitHubClient {
         })
     }
 
+    /// Sends a request to `path` (relative to the API base) and decodes the
+    /// JSON response.
+    ///
+    /// GitHub's error bodies carry the useful part of a failure ("Validation
+    /// Failed", which scope is missing), so non-2xx responses surface that
+    /// message rather than a bare status code — it is what the UI shows the
+    /// user when an action is rejected.
+    async fn request_json<T: serde::de::DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<T> {
+        let mut req = self
+            .http
+            .request(method, format!("{}{}", self.api_base, path));
+        if let Some(body) = body {
+            req = req.json(&body);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| DaemonError::Config(e.to_string()))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| DaemonError::Config(e.to_string()))?;
+
+        if !status.is_success() {
+            let detail = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
+                .unwrap_or_else(|| text.clone());
+            return Err(DaemonError::Config(format!("GitHub {status}: {detail}")));
+        }
+
+        // A 204 (or any empty body) is a success with nothing to decode;
+        // `null` deserializes into `serde_json::Value` and `()` alike.
+        let text = if text.trim().is_empty() { "null".to_string() } else { text };
+        serde_json::from_str(&text).map_err(|e| DaemonError::Config(e.to_string()))
+    }
+
+    /// `GET path`, decoded as JSON.
+    pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+        self.request_json(reqwest::Method::GET, path, None).await
+    }
+
+    /// `POST path` with a JSON body.
+    pub(crate) async fn post_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<T> {
+        self.request_json(reqwest::Method::POST, path, Some(body))
+            .await
+    }
+
+    /// `PATCH path` with a JSON body.
+    pub(crate) async fn patch_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<T> {
+        self.request_json(reqwest::Method::PATCH, path, Some(body))
+            .await
+    }
+
+    /// `PUT path` with a JSON body.
+    pub(crate) async fn put_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<T> {
+        self.request_json(reqwest::Method::PUT, path, Some(body))
+            .await
+    }
+
     /// Validates the token and returns the authenticated login, per
     /// `specs/github-integration.md`'s account-setup validation.
     pub async fn validate(&self) -> Result<String> {

@@ -178,3 +178,12 @@ pub async fn poll_now() -> Result<()> {
     let _: serde_json::Value = call("poll.now", serde_json::Value::Null).await?;
     Ok(())
 }
+
+/// Forwards one `pr.*` call to the daemon.
+///
+/// Returns the raw JSON: the app is a pass-through for these, and typing the
+/// eight response shapes twice (here and in TypeScript) would buy nothing the
+/// UI doesn't already get from the generated types.
+pub async fn pr_call(method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    call(method, params).await
+}

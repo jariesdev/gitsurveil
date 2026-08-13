@@ -36,6 +36,66 @@ pub struct ServerState {
 #[derive(Debug, Default, Deserialize)]
 struct ItemsListParams {}
 
+/// Which pull-request operation a `pr.*` request is asking for.
+#[derive(Debug, Clone, Copy)]
+enum PrAction {
+    Detail,
+    Create,
+    Update,
+    Close,
+    Merge,
+    Comments,
+    Comment,
+    Branches,
+}
+
+/// Params shared by every `pr.*` method. Unused fields stay `None` for
+/// operations that don't need them, so one shape serves all eight rather than
+/// eight nearly-identical structs.
+#[derive(Debug, Deserialize)]
+struct PrParams {
+    /// Which account's credentials to act with. Defaults to the only
+    /// configured account when omitted, which is the common case.
+    #[serde(default)]
+    account_id: Option<String>,
+    /// `"owner/name"`.
+    repo: String,
+    /// PR number; absent for create and branch listing.
+    #[serde(default)]
+    number: Option<u64>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default)]
+    head: Option<String>,
+    #[serde(default)]
+    draft: Option<bool>,
+    #[serde(default)]
+    patch: Option<crate::github::PrPatch>,
+    #[serde(default)]
+    method: Option<gitsurveil_proto::MergeMethod>,
+    #[serde(default)]
+    head_sha: Option<String>,
+    #[serde(default)]
+    comment: Option<String>,
+}
+
+impl PrParams {
+    fn number(&self) -> Result<u64> {
+        self.number
+            .ok_or_else(|| DaemonError::InvalidParams("number is required".into()))
+    }
+
+    fn require<'a>(&self, value: Option<&'a String>, name: &str) -> Result<&'a str> {
+        value
+            .map(String::as_str)
+            .ok_or_else(|| DaemonError::InvalidParams(format!("{name} is required")))
+    }
+}
+
 /// Params for `items.history`.
 #[derive(Debug, Deserialize)]
 struct HistoryParams {
@@ -86,6 +146,14 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "accounts.add" => handle_accounts_add(state, req.params).await,
         "accounts.remove" => handle_accounts_remove(state, req.params),
         "rules.list" => handle_rules_list(state),
+        "pr.detail" => handle_pr(state, req.params, PrAction::Detail).await,
+        "pr.create" => handle_pr(state, req.params, PrAction::Create).await,
+        "pr.update" => handle_pr(state, req.params, PrAction::Update).await,
+        "pr.close" => handle_pr(state, req.params, PrAction::Close).await,
+        "pr.merge" => handle_pr(state, req.params, PrAction::Merge).await,
+        "pr.comments" => handle_pr(state, req.params, PrAction::Comments).await,
+        "pr.comment" => handle_pr(state, req.params, PrAction::Comment).await,
+        "pr.branches" => handle_pr(state, req.params, PrAction::Branches).await,
         "poll.now" => handle_poll_now(state).await,
         other => Err(DaemonError::UnknownMethod(other.to_string())),
     };
@@ -128,6 +196,92 @@ fn handle_items_list(state: &ServerState, params: serde_json::Value) -> Result<s
     // same order without reimplementing the comparison.
     let scored = priority::score_all(&items, &state.rules, Utc::now());
     Ok(serde_json::to_value(scored).expect("Vec<ScoredItem> always serializes"))
+}
+
+/// Runs one pull-request operation against the right account's client.
+///
+/// All eight share this entry point because they share the same preamble:
+/// resolve the account, pull its token from the keychain, build a client.
+async fn handle_pr(
+    state: &ServerState,
+    params: serde_json::Value,
+    action: PrAction,
+) -> Result<serde_json::Value> {
+    let params: PrParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+
+    let accounts = state.store.list_accounts()?;
+    let account = match &params.account_id {
+        Some(id) => accounts
+            .iter()
+            .find(|a| &a.id == id)
+            .ok_or_else(|| DaemonError::UnknownAccount(id.clone()))?,
+        None => accounts
+            .first()
+            .ok_or_else(|| DaemonError::InvalidParams("no account configured".into()))?,
+    };
+    let token = keychain::get_token(&account.id)?
+        .ok_or_else(|| DaemonError::UnknownAccount(account.id.clone()))?;
+    let client = GitHubClient::new(&account.id, &account.api_base, &token)?;
+    let repo = params.repo.as_str();
+
+    let value = match action {
+        PrAction::Detail => {
+            serde_json::to_value(client.pr_detail(repo, params.number()?).await?)
+        }
+        PrAction::Create => serde_json::to_value(
+            client
+                .pr_create(
+                    repo,
+                    params.require(params.base.as_ref(), "base")?,
+                    params.require(params.head.as_ref(), "head")?,
+                    params.require(params.title.as_ref(), "title")?,
+                    params.body.as_deref().unwrap_or(""),
+                    params.draft.unwrap_or(false),
+                )
+                .await?,
+        ),
+        PrAction::Update => {
+            let patch = params
+                .patch
+                .clone()
+                .ok_or_else(|| DaemonError::InvalidParams("patch is required".into()))?;
+            serde_json::to_value(client.pr_update(repo, params.number()?, &patch).await?)
+        }
+        PrAction::Close => {
+            client
+                .pr_close(repo, params.number()?, params.comment.as_deref())
+                .await?;
+            Ok(serde_json::Value::Null)
+        }
+        PrAction::Merge => {
+            client
+                .pr_merge(
+                    repo,
+                    params.number()?,
+                    params.method.unwrap_or(gitsurveil_proto::MergeMethod::Merge),
+                    params.require(params.head_sha.as_ref(), "head_sha")?,
+                    params.title.as_deref(),
+                )
+                .await?;
+            Ok(serde_json::Value::Null)
+        }
+        PrAction::Comments => {
+            serde_json::to_value(client.pr_comments(repo, params.number()?).await?)
+        }
+        PrAction::Comment => serde_json::to_value(
+            client
+                .pr_comment(
+                    repo,
+                    params.number()?,
+                    params.require(params.body.as_ref(), "body")?,
+                )
+                .await?,
+        ),
+        PrAction::Branches => serde_json::to_value(client.list_branches(repo).await?),
+    };
+
+    value.map_err(|e| DaemonError::Config(e.to_string()))
 }
 
 fn handle_items_history(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
