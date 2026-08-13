@@ -12,22 +12,31 @@ import {
   listAccounts,
   listHistory,
   listItems,
+  listRepos,
   listRules,
   openUrl,
   undismissItem,
 } from "../ipc";
-import type { AccountRef, Rule, ScoredItem, StatusResult } from "../types";
+import type {
+  AccountRef,
+  RepoConfig,
+  Rule,
+  ScoredItem,
+  StatusResult,
+} from "../types";
 import { Accounts } from "./Accounts";
 import { Dashboard } from "./Dashboard";
 import { ItemRow } from "./ItemRow";
+import { Repos } from "./Repos";
 import { Rules } from "./Rules";
 
-type View = "dashboard" | "history" | "rules" | "accounts";
+type View = "dashboard" | "history" | "rules" | "repos" | "accounts";
 
 const NAV: { id: View; label: string }[] = [
   { id: "dashboard", label: "Dashboard" },
   { id: "history", label: "History" },
   { id: "rules", label: "Rules" },
+  { id: "repos", label: "Repositories" },
   { id: "accounts", label: "Accounts" },
 ];
 
@@ -36,6 +45,7 @@ interface Data {
   history: ScoredItem[];
   accounts: AccountRef[];
   rules: Rule[];
+  repos: RepoConfig[];
   status: StatusResult;
 }
 
@@ -49,14 +59,15 @@ export function App() {
       // One round trip per view's data. They're all cheap local socket calls,
       // so fetching together keeps the window internally consistent rather
       // than having tabs disagree about what's open.
-      const [items, history, accounts, rules, status] = await Promise.all([
+      const [items, history, accounts, rules, repos, status] = await Promise.all([
         listItems(),
         listHistory(200),
         listAccounts(),
         listRules(),
+        listRepos(),
         daemonStatus(),
       ]);
-      setData({ items, history, accounts, rules, status });
+      setData({ items, history, accounts, rules, repos, status });
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -150,6 +161,9 @@ export function App() {
             <History items={data.history} onRefresh={() => void load()} />
           )}
           {view === "rules" && <Rules rules={data.rules} />}
+          {view === "repos" && (
+            <Repos repos={data.repos} onChange={() => void load()} />
+          )}
           {view === "accounts" && (
             <Accounts accounts={data.accounts} onChange={() => void load()} />
           )}

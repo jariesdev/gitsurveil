@@ -13,6 +13,7 @@ import type {
   Comment,
   MergeMethod,
   PullRequestDetail,
+  RepoConfig,
   Rule,
   ScoredItem,
   StatusResult,
@@ -83,6 +84,21 @@ export function removeAccount(id: string): Promise<void> {
 /** Lists the active priority rules, so the UI can explain scores. */
 export function listRules(): Promise<Rule[]> {
   return invoke<Rule[]>("list_rules");
+}
+
+/** Lists configured local clone paths for the conflict resolver. */
+export function listRepos(): Promise<RepoConfig[]> {
+  return invoke<RepoConfig[]>("list_repos");
+}
+
+/** Registers a local clone path for one repo; daemon validates it. */
+export function setRepo(repo: string, path: string): Promise<RepoConfig[]> {
+  return invoke<RepoConfig[]>("set_repo", { repo, path });
+}
+
+/** Removes a repo's local clone path. Idempotent. */
+export function removeRepo(repo: string): Promise<RepoConfig[]> {
+  return invoke<RepoConfig[]>("remove_repo", { repo });
 }
 
 /** Asks the daemon to poll now rather than waiting for the next cycle. */

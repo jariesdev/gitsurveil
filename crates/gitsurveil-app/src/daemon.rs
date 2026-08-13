@@ -173,6 +173,21 @@ pub async fn list_rules() -> Result<serde_json::Value> {
     call("rules.list", serde_json::Value::Null).await
 }
 
+/// Lists configured local clone paths (`specs/conflict-resolver.md`).
+pub async fn repos_list() -> Result<serde_json::Value> {
+    call("repos.list", serde_json::Value::Null).await
+}
+
+/// Registers a local clone path for one repo (validated by the daemon).
+pub async fn repos_set(repo: &str, path: &str) -> Result<serde_json::Value> {
+    call("repos.set", serde_json::json!({ "repo": repo, "path": path })).await
+}
+
+/// Removes a repo's local clone path; idempotent.
+pub async fn repos_remove(repo: &str) -> Result<serde_json::Value> {
+    call("repos.remove", serde_json::json!({ "repo": repo })).await
+}
+
 /// Asks the daemon to poll now rather than waiting for the next cycle.
 pub async fn poll_now() -> Result<()> {
     let _: serde_json::Value = call("poll.now", serde_json::Value::Null).await?;

@@ -4,8 +4,8 @@
 //! `accounts.{add,list,remove}`, `rules.list`, and `poll.now`. Later phases
 //! add more `match` arms to [`dispatch`] without touching the transport code.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use chrono::Utc;
@@ -13,6 +13,7 @@ use gitsurveil_proto::{AccountRef, AuthKind, Request, Response, StatusResult};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use crate::config::{Config, RepoConfig};
 use crate::error::{DaemonError, Result};
 use crate::github::GitHubClient;
 use crate::keychain;
@@ -27,6 +28,12 @@ pub struct ServerState {
     /// every request rather than cached, since age escalation means an item's
     /// priority drifts with the clock even when nothing about it changed.
     pub rules: Vec<Rule>,
+    /// The live config. `rules`/`poll_interval_secs` are the startup snapshot
+    /// (unchanged at runtime); `repos` is mutated through `repos.set` and
+    /// `repos.remove`, which rewrite the file.
+    pub config: Mutex<Config>,
+    /// Where [`Config::save`] writes, so the API can persist its own changes.
+    pub config_path: PathBuf,
 }
 
 /// Params for `items.list`. All fields optional; an absent field means "no
@@ -146,6 +153,9 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "accounts.add" => handle_accounts_add(state, req.params).await,
         "accounts.remove" => handle_accounts_remove(state, req.params),
         "rules.list" => handle_rules_list(state),
+        "repos.list" => handle_repos_list(state),
+        "repos.set" => handle_repos_set(state, req.params).await,
+        "repos.remove" => handle_repos_remove(state, req.params).await,
         "pr.detail" => handle_pr(state, req.params, PrAction::Detail).await,
         "pr.create" => handle_pr(state, req.params, PrAction::Create).await,
         "pr.update" => handle_pr(state, req.params, PrAction::Update).await,
@@ -334,6 +344,80 @@ fn handle_rules_list(state: &ServerState) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(&state.rules).expect("Vec<Rule> always serializes"))
 }
 
+/// Params for `repos.set`. `path` is the local clone to associate with
+/// `repo` (`"owner/name"`).
+#[derive(Debug, Deserialize)]
+struct RepoSetParams {
+    repo: String,
+    path: PathBuf,
+}
+
+/// Params for `repos.remove`.
+#[derive(Debug, Deserialize)]
+struct RepoRemoveParams {
+    repo: String,
+}
+
+/// Returns the configured local clone paths (`specs/conflict-resolver.md`).
+fn handle_repos_list(state: &ServerState) -> Result<serde_json::Value> {
+    let repos = state.config.lock().expect("config mutex poisoned").repos.clone();
+    Ok(serde_json::to_value(repos).expect("Vec<RepoConfig> always serializes"))
+}
+
+/// Registers a local clone path for one repo. Validates the path (is a git
+/// repo, `origin` points at `owner/name`) before it's stored, so a typo'd
+/// path can't silently disable conflict resolution later. Replaces any
+/// previous entry for the same repo; writes the config through before
+/// responding so the change survives a restart.
+async fn handle_repos_set(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: RepoSetParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    if !is_repo_slug(&params.repo) {
+        return Err(DaemonError::InvalidParams(format!(
+            "repo must be \"owner/name\", got {:?}",
+            params.repo
+        )));
+    }
+    let repo = params.repo.clone();
+    let path = params.path.clone();
+    tokio::task::spawn_blocking(move || crate::gitops::validate_clone(&repo, &path))
+        .await
+        .map_err(|e| DaemonError::Io(std::io::Error::other(e)))??;
+
+    let mut config = state.config.lock().expect("config mutex poisoned");
+    config.repos.retain(|entry| entry.repo != params.repo);
+    config.repos.push(RepoConfig {
+        repo: params.repo,
+        path: params.path,
+    });
+    config.save(&state.config_path)?;
+    Ok(serde_json::to_value(&config.repos).expect("Vec<RepoConfig> always serializes"))
+}
+
+/// Removes a repo's local clone path. Idempotent: removing a repo that isn't
+/// configured is a no-op rather than an error, so a UI retry can't wedge.
+async fn handle_repos_remove(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: RepoRemoveParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let mut config = state.config.lock().expect("config mutex poisoned");
+    let before = config.repos.len();
+    config.repos.retain(|entry| entry.repo != params.repo);
+    if config.repos.len() != before {
+        config.save(&state.config_path)?;
+    }
+    Ok(serde_json::to_value(&config.repos).expect("Vec<RepoConfig> always serializes"))
+}
+
+/// Whether `repo` looks like `"owner/name"`: exactly one `/`, neither part
+/// empty. GitHub repo slugs can't contain another `/`.
+fn is_repo_slug(repo: &str) -> bool {
+    let mut parts = repo.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(owner), Some(name), None) => !owner.is_empty() && !name.is_empty(),
+        _ => false,
+    }
+}
+
 fn handle_accounts_list(state: &ServerState) -> Result<serde_json::Value> {
     let accounts = state.store.list_accounts()?;
     Ok(serde_json::to_value(accounts).expect("Vec<AccountRef> always serializes"))
@@ -499,6 +583,8 @@ mod tests {
             store: Arc::new(Store::open_in_memory().unwrap()),
             started_at: Instant::now(),
             rules: Vec::new(),
+            config: Mutex::new(Config::default()),
+            config_path: PathBuf::from(""),
         }
     }
 
@@ -669,5 +755,60 @@ mod tests {
         )
         .await;
         assert_eq!(resp.error.unwrap().code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn repos_set_rejects_a_malformed_slug() {
+        let state = test_state();
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 6,
+                method: "repos.set".into(),
+                params: serde_json::json!({ "repo": "not-a-slug", "path": "/tmp/x" }),
+            },
+        )
+        .await;
+        assert_eq!(resp.error.unwrap().code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn repos_set_rejects_a_path_that_is_not_a_repo() {
+        let state = test_state();
+        let dir = std::env::temp_dir().join(format!("gs-repos-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 7,
+                method: "repos.set".into(),
+                params: serde_json::json!({ "repo": "acme/api", "path": dir.to_string_lossy() }),
+            },
+        )
+        .await;
+        std::fs::remove_dir_all(&dir).ok();
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "config_error");
+        assert!(err.message.contains("not a git repository"));
+    }
+
+    #[tokio::test]
+    async fn repos_remove_is_idempotent_and_persists() {
+        let state = test_state();
+        let params = serde_json::json!({ "repo": "acme/api" });
+        let resp = dispatch(
+            &state,
+            Request { id: 8, method: "repos.remove".into(), params: params.clone() },
+        )
+        .await;
+        let list = resp.result.unwrap();
+        assert_eq!(list, serde_json::json!([]));
+        // A second remove on the same repo must not error.
+        let resp = dispatch(
+            &state,
+            Request { id: 9, method: "repos.remove".into(), params },
+        )
+        .await;
+        assert!(resp.error.is_none());
     }
 }

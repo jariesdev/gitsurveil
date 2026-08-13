@@ -117,6 +117,18 @@ export interface Rule {
   };
 }
 
+/**
+ * One configured local clone path (`specs/conflict-resolver.md`). The daemon
+ * validates the path on `repos.set`; conflict resolution only works for repos
+ * listed here.
+ */
+export interface RepoConfig {
+  /** `"owner/name"` exactly as it appears on GitHub. */
+  repo: string;
+  /** Absolute path to a local clone of that repository. */
+  path: string;
+}
+
 /** How the dashboard groups items. */
 export type GroupBy = "priority" | "type";
 

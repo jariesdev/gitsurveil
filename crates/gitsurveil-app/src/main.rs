@@ -61,6 +61,9 @@ fn main() {
             commands::remove_account,
             commands::list_accounts,
             commands::list_rules,
+            commands::list_repos,
+            commands::set_repo,
+            commands::remove_repo,
             commands::poll_now,
             commands::pr_detail,
             commands::pr_create,
@@ -340,6 +343,24 @@ mod commands {
     #[tauri::command]
     pub async fn list_rules() -> Result<serde_json::Value, String> {
         crate::daemon::list_rules().await.map_err(|e| e.to_string())
+    }
+
+    /// Lists configured local clone paths for the conflict resolver.
+    #[tauri::command]
+    pub async fn list_repos() -> Result<serde_json::Value, String> {
+        crate::daemon::repos_list().await.map_err(|e| e.to_string())
+    }
+
+    /// Registers a local clone path for one repo (daemon-validated).
+    #[tauri::command]
+    pub async fn set_repo(repo: String, path: String) -> Result<serde_json::Value, String> {
+        crate::daemon::repos_set(&repo, &path).await.map_err(|e| e.to_string())
+    }
+
+    /// Removes a repo's local clone path.
+    #[tauri::command]
+    pub async fn remove_repo(repo: String) -> Result<serde_json::Value, String> {
+        crate::daemon::repos_remove(&repo).await.map_err(|e| e.to_string())
     }
 
     /// Triggers an immediate poll instead of waiting for the next cycle.

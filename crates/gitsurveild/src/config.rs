@@ -12,6 +12,18 @@ use serde::{Deserialize, Serialize};
 use crate::error::{DaemonError, Result};
 use crate::priority::Rule;
 
+/// One configured local clone path (`specs/conflict-resolver.md`). The
+/// conflict resolver only runs against repos that have one of these; the path
+/// is validated on `repos.set` (is a git repo, `origin` matches the repo).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoConfig {
+    /// `"owner/name"` exactly as it appears on GitHub.
+    pub repo: String,
+    /// Absolute path to a local clone of that repository. Never resolved
+    /// against the daemon's working directory — kept as given.
+    pub path: PathBuf,
+}
+
 /// Default polling interval, in seconds. GitHub's own `x-poll-interval` on
 /// `/notifications` floors at 60s; we default to matching it exactly and the
 /// poller raises it dynamically if GitHub asks for a longer interval.
@@ -27,6 +39,11 @@ pub struct Config {
     /// editor arrives in Phase 5 and will write through this same file.
     #[serde(default = "crate::priority::default_rules")]
     pub rules: Vec<Rule>,
+    /// Local clone paths used by the conflict resolver
+    /// (`specs/conflict-resolver.md`). Written by the API (`repos.set` /
+    /// `repos.remove`); the resolver is a no-op for repos without one.
+    #[serde(default)]
+    pub repos: Vec<RepoConfig>,
 }
 
 fn default_poll_interval() -> u64 {
@@ -38,6 +55,7 @@ impl Default for Config {
         Config {
             poll_interval_secs: DEFAULT_POLL_INTERVAL_SECS,
             rules: crate::priority::default_rules(),
+            repos: Vec::new(),
         }
     }
 }

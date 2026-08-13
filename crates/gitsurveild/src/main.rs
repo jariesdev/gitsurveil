@@ -9,6 +9,7 @@
 
 mod config;
 mod error;
+mod gitops;
 mod github;
 mod keychain;
 mod notifications;
@@ -65,6 +66,8 @@ async fn run() -> error::Result<()> {
         store: Arc::clone(&store),
         started_at: Instant::now(),
         rules: config.rules.clone(),
+        config: std::sync::Mutex::new(config.clone()),
+        config_path: config_path.clone(),
     });
 
     let poll_handle = tokio::spawn(poller::run(
