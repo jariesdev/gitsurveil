@@ -5,8 +5,10 @@ only what actually needs your attention.
 
 A local daemon polls GitHub, normalizes everything you're on the hook for —
 review requests, assignments, mentions, failing CI — into one prioritized list,
-and fires desktop notifications. Nothing is hosted: your machine talks to
-GitHub directly with your own token, and no data goes anywhere else.
+and fires desktop notifications. A Pull Requests view shows your own PRs'
+standing state (draft, reviews, CI, mergeability) and notifies you the moment
+one is approved, green, and ready to merge. Nothing is hosted: your machine
+talks to GitHub directly with your own token, and no data goes anywhere else.
 
 ## Status
 
@@ -37,6 +39,7 @@ run it manually, and it stops when you close the terminal.
 - Pull requests and issues assigned to you
 - Mentions
 - Failing CI on your pull requests
+- Your pull requests that become ready to merge (approved, green, not a draft)
 
 Multiple accounts are supported, including GitHub Enterprise.
 
@@ -51,6 +54,7 @@ age nudges old review requests up without ever drowning out a real emergency).
 | Failing CI on your PR | 100 |
 | Review requested | 80 |
 | Changes requested on your PR | 70 |
+| Ready to merge (approved, green, not a draft) | 65 |
 | Mentioned | 50 |
 | Assigned | 40 |
 | Participating | 20 |
@@ -165,6 +169,13 @@ opens the full window:
 - **Dashboard** — items grouped by priority (or by type), with search and
   filters by account, type, and severity. Dismiss anything you don't want to
   see, or force an immediate check with **Check now**.
+- **Pull Requests** — your PRs across all accounts, with their live state:
+  draft, review decision, CI, and mergeability. Filter by status (Open is the
+  default; Closed, Merged, or All re-query the daemon), account, repository,
+  role, and attention (draft / conflicted / CI failing / approved), plus
+  title+repo search. Click a row for the full PR detail pane; a conflicted row
+  gets an inline **Resolve conflicts** action (needs a local clone configured
+  for that repository on the Repositories tab).
 - **History** — resolved and dismissed items, with the option to restore a
   dismissal.
 - **Rules** — how scoring works, and what your configured rules do.
@@ -229,6 +240,7 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `pr.close` / `pr.merge` | Close without merging, or merge |
 | `pr.comments` / `pr.comment` | Read the conversation, or post to it |
 | `pr.branches` | Branch names, for the create-PR form |
+| `prs.list` | Live list of PRs across accounts (standing state for the Pull Requests view); optional account filter and open/closed/merged state |
 | `repos.list` / `repos.set` / `repos.remove` | Local clone paths for the conflict resolver |
 | `conflicts.prepare` | Start a resolution session (temp worktree) |
 | `conflicts.file` | One conflicted file's segments, from the worktree |
@@ -242,10 +254,12 @@ surface.
 
 ## Notifications
 
-You get a notification when a new action item appears, or when CI flips from
-passing to failing on something you care about. Items you've already seen never
-notify twice. If a single poll turns up more than three new items (say, after
-being offline), they collapse into one summary notification instead of a burst.
+You get a notification when a new action item appears, when CI flips from
+passing to failing on something you care about, or when one of your pull
+requests crosses into ready-to-merge (approved, green, not a draft). Items
+you've already seen never notify twice. If a single poll turns up more than
+three new items (say, after being offline), they collapse into one summary
+notification instead of a burst.
 
 Two current limitations, both temporary:
 
