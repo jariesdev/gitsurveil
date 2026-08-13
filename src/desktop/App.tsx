@@ -162,7 +162,12 @@ export function App() {
           {view === "history" && (
             <History items={data.history} onRefresh={() => void load()} />
           )}
-          {view === "pull-requests" && <PullRequests accounts={data.accounts} />}
+          {view === "pull-requests" && (
+            <PullRequests
+              accounts={data.accounts}
+              onOpenRepos={() => setView("repos")}
+            />
+          )}
           {view === "rules" && <Rules rules={data.rules} />}
           {view === "repos" && (
             <Repos repos={data.repos} onChange={() => void load()} />

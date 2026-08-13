@@ -18,8 +18,14 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { listPullRequests } from "../../ipc";
-import type { AccountRef, PrRole, PrState, PullRequestSummary } from "../../types";
+import { listPullRequests, listRepos } from "../../ipc";
+import type {
+  AccountRef,
+  PrRole,
+  PrState,
+  PullRequestSummary,
+  RepoConfig,
+} from "../../types";
 import { ConflictResolver } from "../ConflictResolver";
 import { age } from "../ItemRow";
 import { PrDetail } from "../PrDetail";
@@ -52,9 +58,18 @@ const STATUS_CHOICES: { value: PrState | ""; label: string }[] = [
   { value: "", label: "All" },
 ];
 
-export function PullRequests({ accounts }: { accounts: AccountRef[] }) {
+export function PullRequests({
+  accounts,
+  onOpenRepos,
+}: {
+  accounts: AccountRef[];
+  /** Jumps to the Repositories view, reached when resolving needs a clone. */
+  onOpenRepos: () => void;
+}) {
   /** Fetched from the daemon; `null` until the first query lands. */
   const [rows, setRows] = useState<PullRequestSummary[] | null>(null);
+  /** Configured local clones (`repos.list`), used to gate conflict resolution. */
+  const [repos, setRepos] = useState<RepoConfig[]>([]);
   const [status, setStatus] = useState<PrState | "">("open");
   const [filters, setFilters] = useState<PullRequestFilters>(NO_PR_FILTERS);
   const [busy, setBusy] = useState(false);
@@ -67,14 +82,24 @@ export function PullRequests({ accounts }: { accounts: AccountRef[] }) {
   const [resolving, setResolving] = useState<{ repo: string; number: number } | null>(
     null,
   );
+  /** A conflicted PR we couldn't open a resolver for — no local clone. */
+  const [noClone, setNoClone] = useState<{ repo: string; number: number } | null>(
+    null,
+  );
 
   const load = useCallback(async (state: PrState | "") => {
     setBusy(true);
     try {
-      const fetched = await listPullRequests({
-        state: state === "" ? undefined : state,
-      });
+      // Repos ride along so "Resolve conflicts" can tell, before opening the
+      // resolver, whether a local clone exists for that repository.
+      const [fetched, configured] = await Promise.all([
+        listPullRequests({
+          state: state === "" ? undefined : state,
+        }),
+        listRepos(),
+      ]);
       setRows(fetched);
+      setRepos(configured);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -101,6 +126,17 @@ export function PullRequests({ accounts }: { accounts: AccountRef[] }) {
   );
 
   const hiddenCount = (rows?.length ?? 0) - visible.length;
+
+  /** One handler for both resolve routes (this row and `PrDetail`'s button).
+   * The resolver needs a configured local clone; without one, explain why
+   * instead of failing obscurely, with a path to the Repositories tab. */
+  function handleResolve(repo: string, number: number) {
+    if (repos.some((r) => r.repo === repo)) {
+      setResolving({ repo, number });
+    } else {
+      setNoClone({ repo, number });
+    }
+  }
 
   return (
     <div className="relative flex h-full">
@@ -245,7 +281,7 @@ export function PullRequests({ accounts }: { accounts: AccountRef[] }) {
                     {pr.mergeability === "conflicted" && (
                       <button
                         type="button"
-                        onClick={() => setResolving({ repo: pr.repo, number: pr.number })}
+                        onClick={() => handleResolve(pr.repo, pr.number)}
                         className="shrink-0 rounded border border-red-300 px-2 py-0.5 text-[11px] text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950"
                       >
                         Resolve conflicts
@@ -270,6 +306,33 @@ export function PullRequests({ accounts }: { accounts: AccountRef[] }) {
             {hiddenCount} pull request{hiddenCount === 1 ? "" : "s"} hidden by filters
           </footer>
         )}
+
+        {noClone && (
+          <div className="flex items-center gap-3 border-t border-amber-200 bg-amber-50 px-4 py-2 text-xs dark:border-amber-900 dark:bg-amber-950">
+            <span className="min-w-0 flex-1">
+              Can’t open the conflict resolver for {noClone.repo}#{noClone.number} —
+              no local clone is configured for this repository.
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setNoClone(null);
+                onOpenRepos();
+              }}
+              className="shrink-0 rounded border border-neutral-300 px-2 py-0.5 dark:border-neutral-700"
+            >
+              Open Repositories
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => setNoClone(null)}
+              className="shrink-0 rounded px-1.5 text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
       </div>
 
       {selected && !resolving && (
@@ -279,7 +342,7 @@ export function PullRequests({ accounts }: { accounts: AccountRef[] }) {
           number={selected.number}
           onClose={() => setSelected(null)}
           onChanged={() => void load(status)}
-          onResolve={() => setResolving(selected)}
+          onResolve={() => handleResolve(selected.repo, selected.number)}
         />
       )}
 
