@@ -10,10 +10,10 @@ GitHub directly with your own token, and no data goes anywhere else.
 
 ## Status
 
-**Early development.** Phases 1–5 of 9 are done: the daemon monitors GitHub,
+**Early development.** Phases 1–6 of 9 are done: the daemon monitors GitHub,
 prioritizes what it finds, and notifies you; a menubar app shows what's
-pending; and a desktop window provides the dashboard, history, rules, and
-account management. PR management and the conflict resolver come next.
+pending; and a desktop window provides the dashboard, history, rules, accounts,
+and pull-request management. The conflict resolver comes next.
 
 | Phase | Feature | Status |
 |---|---|---|
@@ -22,7 +22,7 @@ account management. PR management and the conflict resolver come next.
 | 3 | Menubar app (tray + notifications popover) | ✅ Done |
 | 4 | Priority engine (scoring, severity tray, outrank gate) | ✅ Done |
 | 5 | Full desktop UI (dashboard, rules, accounts) | ✅ Done |
-| 6 | PR management (create/update/close/merge, comments) | Not started |
+| 6 | PR management (create/update/close/merge, comments) | ✅ Done |
 | 7 | Conflict resolver (3-pane, Sublime Merge-style) | Not started |
 | 8 | AI PR review (opt-in; Ollama or Claude) | Not started |
 | 9 | Service registration & packaging | Not started |
@@ -169,6 +169,12 @@ opens the full window:
 - **Rules** — how scoring works, and what your configured rules do.
 - **Accounts** — add or remove accounts.
 
+Clicking a pull request opens a detail pane beside the list: description,
+reviewers, checks, and the full conversation, with buttons to edit the title
+and body, comment, close, or merge (merge commit, squash, or rebase). Merging
+and closing ask for confirmation first, and a merge is rejected by GitHub if
+the branch moved since the pane loaded it.
+
 Quitting the app leaves the daemon running, so notifications keep arriving.
 
 ### 4. Inspect what it's tracking (optional)
@@ -192,6 +198,11 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `accounts.remove` | Remove an account, its items, and its token |
 | `rules.list` | The active priority rules |
 | `poll.now` | Check GitHub immediately |
+| `pr.detail` | Full detail for one pull request |
+| `pr.create` / `pr.update` | Create a PR, or edit title/body/base/labels/reviewers |
+| `pr.close` / `pr.merge` | Close without merging, or merge |
+| `pr.comments` / `pr.comment` | Read the conversation, or post to it |
+| `pr.branches` | Branch names, for the create-PR form |
 
 More methods land with each phase — see `specs/daemon.md` for the full planned
 surface.
