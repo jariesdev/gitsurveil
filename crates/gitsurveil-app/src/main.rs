@@ -73,6 +73,12 @@ fn main() {
             commands::pr_comments,
             commands::pr_comment,
             commands::pr_branches,
+            commands::conflict_prepare,
+            commands::conflict_file,
+            commands::conflict_save,
+            commands::conflict_commit,
+            commands::conflict_push,
+            commands::conflict_abort,
         ])
         .setup(|app| {
             // Menubar app, not a dock app: no dock icon, no app-switcher
@@ -483,5 +489,94 @@ mod commands {
         crate::daemon::pr_call("pr.branches", serde_json::json!({ "repo": repo }))
             .await
             .map_err(|e| e.to_string())
+    }
+
+    // ---- conflict resolution (`specs/conflict-resolver.md`) --------------
+    //
+    // Six thin pass-throughs. The daemon owns the temp worktree, the merge,
+    // the commit, and the push; the UI only previews and sends intent.
+
+    /// Starts a resolution session for `repo#number` on a temp worktree.
+    #[tauri::command]
+    pub async fn conflict_prepare(
+        repo: String,
+        number: u64,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::conflicts_call(
+            "conflicts.prepare",
+            serde_json::json!({ "repo": repo, "number": number }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// The conflict regions of one file in the session's worktree.
+    #[tauri::command]
+    pub async fn conflict_file(
+        session_id: String,
+        path: String,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::conflicts_call(
+            "conflicts.file",
+            serde_json::json!({ "session_id": session_id, "path": path }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Writes a resolution: full `content`, or a whole-file `pick` of a side.
+    #[tauri::command]
+    pub async fn conflict_save(
+        session_id: String,
+        path: String,
+        content: Option<String>,
+        pick: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::conflicts_call(
+            "conflicts.save",
+            serde_json::json!({
+                "session_id": session_id, "path": path,
+                "content": content, "pick": pick,
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Stages the resolved files and creates the merge commit in the worktree.
+    #[tauri::command]
+    pub async fn conflict_commit(
+        session_id: String,
+        message: String,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::conflicts_call(
+            "conflicts.commit",
+            serde_json::json!({ "session_id": session_id, "message": message }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Pushes the resolution branch to the PR's head and tears the session down.
+    #[tauri::command]
+    pub async fn conflict_push(session_id: String) -> Result<serde_json::Value, String> {
+        crate::daemon::conflicts_call(
+            "conflicts.push",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Abandons the session: prunes the worktree, deletes the branch, keeps the
+    /// user's clone and the remote untouched. Idempotent.
+    #[tauri::command]
+    pub async fn conflict_abort(session_id: String) -> Result<serde_json::Value, String> {
+        crate::daemon::conflicts_call(
+            "conflicts.abort",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+        .map_err(|e| e.to_string())
     }
 }

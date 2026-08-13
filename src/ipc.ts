@@ -11,6 +11,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountRef,
   Comment,
+  ConflictFile,
+  ConflictSession,
   MergeMethod,
   PullRequestDetail,
   RepoConfig,
@@ -179,4 +181,52 @@ export function prComment(
 /** Branch names in a repository, for the create-PR form. */
 export function prBranches(repo: string): Promise<string[]> {
   return invoke<string[]>("pr_branches", { repo });
+}
+
+// ---- conflict resolution (`specs/conflict-resolver.md`) ------------------
+// All of these act on the daemon's temp worktree — the user's local clone is
+// never touched.
+
+/** Starts a resolution session for `repo#number`. Requires a configured clone. */
+export function conflictPrepare(
+  repo: string,
+  number: number,
+): Promise<ConflictSession> {
+  return invoke<ConflictSession>("conflict_prepare", { repo, number });
+}
+
+/** The conflict regions of one file, read live from the session worktree. */
+export function conflictFile(
+  sessionId: string,
+  path: string,
+): Promise<ConflictFile> {
+  return invoke<ConflictFile>("conflict_file", { sessionId, path });
+}
+
+/** Writes a resolution: full `content`, or a whole-file `pick` of a side. */
+export function conflictSave(
+  sessionId: string,
+  path: string,
+  content?: string,
+  pick?: "ours" | "theirs",
+): Promise<void> {
+  return invoke<void>("conflict_save", { sessionId, path, content, pick });
+}
+
+/** Stages resolved files and creates the merge commit in the worktree. */
+export function conflictCommit(
+  sessionId: string,
+  message: string,
+): Promise<void> {
+  return invoke<void>("conflict_commit", { sessionId, message });
+}
+
+/** Pushes the resolution to the PR's head and tears the session down. */
+export function conflictPush(sessionId: string): Promise<void> {
+  return invoke<void>("conflict_push", { sessionId });
+}
+
+/** Abandons the session; idempotent, leaves the clone and remote untouched. */
+export function conflictAbort(sessionId: string): Promise<void> {
+  return invoke<void>("conflict_abort", { sessionId });
 }

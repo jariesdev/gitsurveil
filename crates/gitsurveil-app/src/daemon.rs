@@ -202,3 +202,11 @@ pub async fn poll_now() -> Result<()> {
 pub async fn pr_call(method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
     call(method, params).await
 }
+
+/// Forwards one `conflicts.*` call to the daemon (`specs/conflict-resolver.md`).
+///
+/// Like `pr_call`, a raw pass-through: the UI renders the session and file
+/// payloads straight off the wire.
+pub async fn conflicts_call(method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    call(method, params).await
+}

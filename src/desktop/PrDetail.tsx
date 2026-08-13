@@ -48,12 +48,15 @@ export function PrDetail({
   number,
   onClose,
   onChanged,
+  onResolve,
 }: {
   repo: string;
   number: number;
   onClose: () => void;
   /** Called after a mutation, so the dashboard can refresh behind the pane. */
   onChanged: () => void;
+  /** Opens the three-pane conflict resolver for a conflicted PR. */
+  onResolve: () => void;
 }) {
   const [pr, setPr] = useState<PullRequestDetail | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -324,6 +327,17 @@ export function PrDetail({
                 Edit
               </button>
             )
+          )}
+
+          {isOpen && !editing && pr.mergeability === "conflicted" && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onResolve}
+              className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 disabled:opacity-50 dark:border-red-800 dark:text-red-400"
+            >
+              Resolve conflicts
+            </button>
           )}
 
           {isOpen && !editing && (

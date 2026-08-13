@@ -53,7 +53,7 @@ describe("PrDetail", () => {
   it("renders the pull request and its metadata", async () => {
     vi.mocked(ipc.prDetail).mockResolvedValue(pr());
 
-    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} />);
+    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={vi.fn()} />);
 
     expect(await screen.findByText("Add rate limiting")).toBeInTheDocument();
     expect(screen.getByText("acme/api#482")).toBeInTheDocument();
@@ -65,7 +65,7 @@ describe("PrDetail", () => {
     vi.mocked(ipc.prDetail).mockResolvedValue(pr({ head_sha: "deadbeef" }));
     vi.mocked(ipc.prMerge).mockResolvedValue(undefined);
 
-    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} />);
+    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={vi.fn()} />);
     await screen.findByText("Add rate limiting");
     await userEvent.click(screen.getByRole("button", { name: "Merge" }));
 
@@ -84,7 +84,7 @@ describe("PrDetail", () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
     vi.mocked(ipc.prDetail).mockResolvedValue(pr());
 
-    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} />);
+    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={vi.fn()} />);
     await screen.findByText("Add rate limiting");
     await userEvent.click(screen.getByRole("button", { name: "Merge" }));
 
@@ -94,16 +94,38 @@ describe("PrDetail", () => {
   it("disables merging when the branch has conflicts", async () => {
     vi.mocked(ipc.prDetail).mockResolvedValue(pr({ mergeability: "conflicted" }));
 
-    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} />);
+    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={vi.fn()} />);
 
     expect(await screen.findByText("Conflicts with base branch")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Merge" })).toBeDisabled();
   });
 
+  it("offers the conflict resolver entry only for conflicted PRs", async () => {
+    const onResolve = vi.fn();
+    vi.mocked(ipc.prDetail).mockResolvedValue(pr({ mergeability: "conflicted" }));
+
+    const { unmount } = render(
+      <PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={onResolve} />,
+    );
+    await screen.findByText("Add rate limiting");
+
+    const entry = screen.getByRole("button", { name: "Resolve conflicts" });
+    await userEvent.click(entry);
+    expect(onResolve).toHaveBeenCalledOnce();
+
+    unmount();
+    vi.mocked(ipc.prDetail).mockResolvedValue(pr({ mergeability: "clean" }));
+    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={onResolve} />);
+    await screen.findByText("Add rate limiting");
+    expect(
+      screen.queryByRole("button", { name: "Resolve conflicts" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("offers no write actions on a merged pull request", async () => {
     vi.mocked(ipc.prDetail).mockResolvedValue(pr({ state: "merged" }));
 
-    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} />);
+    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={vi.fn()} />);
     await screen.findByText("Add rate limiting");
 
     expect(screen.queryByRole("button", { name: "Merge" })).not.toBeInTheDocument();
@@ -115,7 +137,7 @@ describe("PrDetail", () => {
     vi.mocked(ipc.prDetail).mockResolvedValue(pr());
     vi.mocked(ipc.prUpdate).mockResolvedValue(pr({ title: "New title" }));
 
-    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} />);
+    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={vi.fn()} />);
     await screen.findByText("Add rate limiting");
     await userEvent.click(screen.getByRole("button", { name: "Edit" }));
 
@@ -140,7 +162,7 @@ describe("PrDetail", () => {
       new Error("GitHub 405: Pull Request is not mergeable"),
     );
 
-    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} />);
+    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={vi.fn()} />);
     await screen.findByText("Add rate limiting");
     await userEvent.click(screen.getByRole("button", { name: "Merge" }));
 

@@ -16,6 +16,7 @@ import {
   type Severity,
 } from "../types";
 import { applyFilters, groupItems, NO_FILTERS, type Filters } from "./grouping";
+import { ConflictResolver } from "./ConflictResolver";
 import { ItemRow } from "./ItemRow";
 import { PrDetail } from "./PrDetail";
 
@@ -45,6 +46,10 @@ export function Dashboard({
   const [selected, setSelected] = useState<{ repo: string; number: number } | null>(
     null,
   );
+  /** The PR being resolved in the three-pane editor, if any. */
+  const [resolving, setResolving] = useState<{ repo: string; number: number } | null>(
+    null,
+  );
 
   const visible = useMemo(() => applyFilters(items, filters), [items, filters]);
   const groups = useMemo(() => groupItems(visible, groupBy), [visible, groupBy]);
@@ -67,7 +72,7 @@ export function Dashboard({
   }
 
   return (
-    <div className="flex h-full">
+    <div className="relative flex h-full">
       <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
         <input
@@ -190,14 +195,26 @@ export function Dashboard({
       )}
       </div>
 
-      {selected && (
+      {selected && !resolving && (
         <PrDetail
           key={`${selected.repo}#${selected.number}`}
           repo={selected.repo}
           number={selected.number}
           onClose={() => setSelected(null)}
           onChanged={onRefresh}
+          onResolve={() => setResolving(selected)}
         />
+      )}
+
+      {resolving && (
+        <div className="absolute inset-0 z-20">
+          <ConflictResolver
+            repo={resolving.repo}
+            number={resolving.number}
+            onClose={() => setResolving(null)}
+            onResolved={onRefresh}
+          />
+        </div>
       )}
     </div>
   );
