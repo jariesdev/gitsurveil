@@ -94,6 +94,31 @@ pub struct Comment {
     pub path: Option<String>,
 }
 
+/// A review thread: a code comment plus its replies. A thread resolves as a
+/// whole on GitHub, which is what turns the row badge off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewThread {
+    /// GitHub's thread id, required by the resolve/unresolve mutation.
+    pub id: String,
+    /// Path the thread's comments are anchored to.
+    pub path: Option<String>,
+    /// Whether the thread is resolved on GitHub.
+    pub resolved: bool,
+    /// The thread's comments, oldest first.
+    pub comments: Vec<Comment>,
+}
+
+/// The conversation on a pull request. Top-level issue comments and review
+/// threads are deliberately distinct: only review comments group into threads
+/// with a resolve state, while issue comments are the PR's flat timeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conversation {
+    /// Top-level comments on the PR.
+    pub issue_comments: Vec<Comment>,
+    /// Review comment threads, each carrying its own resolve state.
+    pub review_threads: Vec<ReviewThread>,
+}
+
 /// How to merge a pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -187,6 +212,9 @@ pub struct PullRequestSummary {
     pub ci_status: CiStatus,
     /// The aggregate review decision.
     pub review_decision: ReviewDecision,
+    /// Number of unresolved review threads (comments awaiting a reply or a
+    /// resolve). Zero when the PR has no open threads.
+    pub unresolved_threads: u64,
     /// Whether it can be merged as-is. `Unknown` means GitHub is still
     /// computing it — never treat that as conflicted.
     pub mergeable: Mergeability,

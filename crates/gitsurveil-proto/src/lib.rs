@@ -19,8 +19,8 @@ pub use conflict::{
 };
 pub use item::{AccountRef, ActionItem, AuthKind, CiStatus, ItemKind, ItemState};
 pub use pr::{
-    Check, Comment, MergeMethod, Mergeability, PrRole, PrState, PullRequestDetail,
-    PullRequestSummary, ReviewDecision, Reviewer,
+    Check, Comment, Conversation, MergeMethod, Mergeability, PrRole, PrState, PullRequestDetail,
+    PullRequestSummary, ReviewDecision, ReviewThread, Reviewer,
 };
 pub use priority::{ScoredItem, Severity};
 pub use rpc::{ErrorPayload, Request, Response, StatusResult};

@@ -182,6 +182,22 @@ export interface Comment {
   path: string | null;
 }
 
+/** A review thread: a code comment plus its replies. */
+export interface ReviewThread {
+  /** GitHub's thread id, required by the resolve/unresolve mutation. */
+  id: string;
+  path: string | null;
+  /** Whether the thread is resolved on GitHub. */
+  resolved: boolean;
+  comments: Comment[];
+}
+
+/** The conversation on a pull request. */
+export interface Conversation {
+  issue_comments: Comment[];
+  review_threads: ReviewThread[];
+}
+
 /** Why a pull request appears in the user's list. A set, not a single value:
  * one PR can be authored *and* self-assigned, and must then be one row with
  * both badges rather than two rows. */
@@ -223,6 +239,9 @@ export interface PullRequestSummary {
   ci_status: CiStatus;
   /** The aggregate review decision. */
   review_decision: ReviewDecision;
+  /** Number of unresolved review threads (comments awaiting a reply or a
+   * resolve). Zero when the PR has no open threads. */
+  unresolved_threads: number;
   /** Whether it can be merged as-is. `unknown` means GitHub is still
    * computing it — never treat that as conflicted. */
   mergeability: Mergeability;

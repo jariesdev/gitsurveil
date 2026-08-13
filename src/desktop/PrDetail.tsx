@@ -6,22 +6,46 @@
  * of the app that writes to GitHub.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   openUrl,
+  prBranches,
   prClose,
   prComment,
+  prCommentReply,
   prComments,
   prDetail,
+  prLabels,
   prMerge,
+  prResolve,
   prUpdate,
 } from "../ipc";
+import { renderMarkdown } from "../markdown";
+import { ContextMenu } from "./ContextMenu";
 import type {
-  Comment,
+  Conversation,
   MergeMethod,
   Mergeability,
   PullRequestDetail,
+  ReviewThread,
 } from "../types";
+
+/** True when two label lists carry the same names, in any order. */
+function sameLabels(a: string[], b: string[]): boolean {
+  const bSet = new Set(b);
+  return a.length === b.length && a.every((label) => bSet.has(label));
+}
+
+/** The chips offered in the label picker: repo labels, the PR's current
+ * labels (which may not exist on the repo anymore), and anything the user
+ * added as a draft. */
+function labelOptions(
+  draft: string[],
+  current: string[],
+  repo: string[],
+): string[] {
+  return [...new Set([...repo, ...current, ...draft])].sort();
+}
 
 /** How each mergeability state is described and styled. */
 const MERGEABILITY: Record<Mergeability, { label: string; className: string }> = {
@@ -59,15 +83,24 @@ export function PrDetail({
   onResolve: () => void;
 }) {
   const [pr, setPr] = useState<PullRequestDetail | null>(null);
-  const [comments, setComments] = useState<Comment[]>([]);
+  const [conversation, setConversation] = useState<Conversation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const [draftBody, setDraftBody] = useState("");
+  const [draftBase, setDraftBase] = useState("");
+  const [draftLabels, setDraftLabels] = useState<string[]>([]);
+  const [draftDraft, setDraftDraft] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [repoLabels, setRepoLabels] = useState<string[]>([]);
+  const [newLabel, setNewLabel] = useState("");
   const [newComment, setNewComment] = useState("");
   const [mergeMethod, setMergeMethod] = useState<MergeMethod>("merge");
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const replyRef = useRef<HTMLTextAreaElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -76,7 +109,7 @@ export function PrDetail({
         prComments(repo, number),
       ]);
       setPr(detail);
-      setComments(thread);
+      setConversation(thread);
       setDraftTitle(detail.title);
       setDraftBody(detail.body);
       setError(null);
@@ -88,6 +121,86 @@ export function PrDetail({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Open a reply box ready to type: focus it the moment it appears.
+  useEffect(() => {
+    if (replyingTo) replyRef.current?.focus();
+  }, [replyingTo]);
+
+  /** Opens the edit form seeded with the current PR, loading branch names
+   * for the target-branch suggestions and repo labels for the tag picker
+   * (both best-effort; the fields still work without them). */
+  function openEdit() {
+    if (!pr) return;
+    setDraftTitle(pr.title);
+    setDraftBody(pr.body);
+    setDraftBase(pr.base);
+    setDraftLabels(pr.labels);
+    setDraftDraft(pr.draft);
+    setEditing(true);
+    void prBranches(repo)
+      .then(setBranches)
+      .catch(() => setBranches([]));
+    void prLabels(repo)
+      .then(setRepoLabels)
+      .catch(() => setRepoLabels([]));
+  }
+
+  /** Closes the edit form, discarding drafts. */
+  function cancelEdit() {
+    if (!pr) return;
+    setDraftTitle(pr.title);
+    setDraftBody(pr.body);
+    setDraftBase(pr.base);
+    setDraftLabels(pr.labels);
+    setDraftDraft(pr.draft);
+    setNewLabel("");
+    setEditing(false);
+  }
+
+  /** Selects or deselects a label chip. */
+  function toggleLabel(label: string) {
+    setDraftLabels((prev) =>
+      prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label],
+    );
+  }
+
+  /** Adds a label by name — GitHub creates it on assignment if needed. */
+  function addLabel() {
+    const label = newLabel.trim();
+    if (label && !draftLabels.includes(label)) {
+      setDraftLabels((prev) => [...prev, label]);
+    }
+    setNewLabel("");
+  }
+
+  /**
+   * Saves only the fields the user actually changed, then reloads. Labels
+   * replace the whole set, so a reordered list is a no-op.
+   */
+  function saveEdit() {
+    if (!pr) return;
+    const patch: Partial<{
+      title: string;
+      body: string;
+      base: string;
+      draft: boolean;
+      labels: string[];
+    }> = {};
+    if (draftTitle !== pr.title) patch.title = draftTitle;
+    if (draftBody !== pr.body) patch.body = draftBody;
+    if (draftBase !== pr.base) patch.base = draftBase;
+    if (draftDraft !== pr.draft) patch.draft = draftDraft;
+    if (!sameLabels(draftLabels, pr.labels)) patch.labels = draftLabels;
+    if (Object.keys(patch).length === 0) {
+      setEditing(false);
+      return;
+    }
+    void run(async () => {
+      await prUpdate(repo, number, patch);
+      setEditing(false);
+    });
+  }
 
   /** Runs a mutation, then reloads so the pane can't show stale state. */
   async function run(action: () => Promise<unknown>) {
@@ -102,6 +215,47 @@ export function PrDetail({
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Replies inside a thread. GitHub threads a reply by parent comment id. */
+  async function submitReply(thread: ReviewThread) {
+    const last = thread.comments[thread.comments.length - 1];
+    const body = replyText.trim();
+    if (!last || !body) return;
+    await run(async () => {
+      await prCommentReply(repo, number, last.id, body);
+      setReplyingTo(null);
+      setReplyText("");
+    });
+  }
+
+  /** Closes the reply box, discarding the draft. */
+  function cancelReply() {
+    setReplyingTo(null);
+    setReplyText("");
+  }
+
+  /**
+   * Reply-box keyboard handling: Shift+Enter posts (same as the button),
+   * Esc cancels, and a bare Enter just adds a new line.
+   */
+  function replyKeyDown(
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+    thread: ReviewThread,
+  ) {
+    if (e.key === "Escape") {
+      cancelReply();
+    } else if (e.key === "Enter" && e.shiftKey) {
+      e.preventDefault();
+      void submitReply(thread);
+    }
+  }
+
+  /** Flips a thread's resolve state on GitHub. */
+  async function toggleResolved(thread: ReviewThread) {
+    await run(async () => {
+      await prResolve(repo, thread.id, !thread.resolved);
+    });
   }
 
   if (error && !pr) {
@@ -124,18 +278,92 @@ export function PrDetail({
 
   const merge = MERGEABILITY[pr.mergeability];
   const isOpen = pr.state === "open";
+  // `Promise.all` loads detail and conversation together, so a rendered pane
+  // always has both; this fallback only satisfies the null-check.
+  const convo = conversation ?? { issue_comments: [], review_threads: [] };
+  const messageCount =
+    convo.issue_comments.length +
+    convo.review_threads.reduce((n, t) => n + t.comments.length, 0);
 
   return (
     <Panel onClose={onClose}>
       <div className="overflow-y-auto">
         <div className="border-b border-neutral-200 p-4 dark:border-neutral-800">
           {editing ? (
-            <input
-              value={draftTitle}
-              onChange={(e) => setDraftTitle(e.target.value)}
-              aria-label="Title"
-              className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-            />
+            <div className="space-y-2">
+              <input
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                aria-label="Title"
+                className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+              <div className="flex flex-wrap gap-2">
+                <input
+                  value={draftBase}
+                  onChange={(e) => setDraftBase(e.target.value)}
+                  list="pr-base-branches"
+                  aria-label="Base branch"
+                  className="w-40 rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+                />
+                <datalist id="pr-base-branches">
+                  {branches.map((branch) => (
+                    <option key={branch} value={branch} />
+                  ))}
+                </datalist>
+              </div>
+              <div>
+                <div className="mb-1 text-[11px] text-neutral-500">Labels</div>
+                <div className="flex flex-wrap gap-1">
+                  {labelOptions(draftLabels, pr.labels, repoLabels).map((label) => (
+                    <button
+                      key={label}
+                      type="button"
+                      aria-pressed={draftLabels.includes(label)}
+                      onClick={() => toggleLabel(label)}
+                      className={`rounded px-1.5 py-0.5 text-[11px] ${
+                        draftLabels.includes(label)
+                          ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                          : "border border-neutral-300 text-neutral-600 dark:border-neutral-700 dark:text-neutral-300"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-1 flex gap-1">
+                  <input
+                    value={newLabel}
+                    onChange={(e) => setNewLabel(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addLabel();
+                      }
+                    }}
+                    placeholder="Add a label"
+                    aria-label="New label"
+                    className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+                  />
+                  <button
+                    type="button"
+                    disabled={!newLabel.trim()}
+                    onClick={addLabel}
+                    className="rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-neutral-700"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-[11px] text-neutral-500">
+                <input
+                  type="checkbox"
+                  checked={draftDraft}
+                  onChange={(e) => setDraftDraft(e.target.checked)}
+                  aria-label="Draft"
+                />
+                Draft (not ready for review)
+              </label>
+            </div>
           ) : (
             <h2 className="text-sm font-semibold">{pr.title}</h2>
           )}
@@ -178,10 +406,10 @@ export function PrDetail({
               aria-label="Description"
               className="w-full rounded border border-neutral-300 bg-white px-2 py-1 font-mono text-xs dark:border-neutral-700 dark:bg-neutral-900"
             />
+          ) : pr.body ? (
+            <Markdown source={pr.body} />
           ) : (
-            <p className="whitespace-pre-wrap text-xs text-neutral-700 dark:text-neutral-300">
-              {pr.body || <span className="text-neutral-500">No description.</span>}
-            </p>
+            <p className="text-xs text-neutral-500">No description.</p>
           )}
         </Section>
 
@@ -230,22 +458,100 @@ export function PrDetail({
           </Section>
         )}
 
-        <Section title={`Conversation (${comments.length})`}>
-          {comments.length === 0 ? (
+        <Section
+          title={`Conversation (${messageCount})`}
+        >
+          {messageCount === 0 ? (
             <p className="text-xs text-neutral-500">No comments yet.</p>
           ) : (
-            <ul className="space-y-3">
-              {comments.map((comment) => (
-                <li key={comment.id} className="text-xs">
+            <ul className="space-y-4">
+              {convo.issue_comments.map((comment) => (
+                <li key={`issue-${comment.id}`} className="text-xs">
                   <div className="text-neutral-500">
                     <span className="font-medium text-neutral-700 dark:text-neutral-300">
                       {comment.author}
                     </span>
-                    {comment.path && <span> on {comment.path}</span>}
                   </div>
-                  <p className="mt-0.5 whitespace-pre-wrap text-neutral-700 dark:text-neutral-300">
-                    {comment.body}
-                  </p>
+                  <Markdown source={comment.body} />
+                </li>
+              ))}
+
+              {convo.review_threads.map((thread) => (
+                <li
+                  key={thread.id}
+                  className="rounded border border-neutral-200 p-2 dark:border-neutral-800"
+                >
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <span className="truncate font-medium text-neutral-700 dark:text-neutral-300">
+                      {thread.path ?? "General"}
+                    </span>
+                    {thread.resolved && <Badge>Resolved</Badge>}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void toggleResolved(thread)}
+                      className="ml-auto shrink-0 rounded border border-neutral-300 px-1.5 py-0.5 text-[11px] disabled:opacity-50 dark:border-neutral-700"
+                    >
+                      {thread.resolved ? "Unresolve" : "Resolve"}
+                    </button>
+                  </div>
+
+                  <ul className="mt-1 space-y-2">
+                    {thread.comments.map((comment, index) => (
+                      <li key={`${thread.id}-${comment.id || index}`} className="text-xs">
+                        <span className="text-neutral-500">
+                          <span className="font-medium text-neutral-700 dark:text-neutral-300">
+                            {comment.author}
+                          </span>
+                        </span>
+                        <Markdown source={comment.body} />
+                      </li>
+                    ))}
+                  </ul>
+
+                  {replyingTo === thread.id ? (
+                    <div className="mt-2">
+                      <textarea
+                        ref={replyRef}
+                        value={replyText}
+                        onChange={(e) => setReplyText(e.target.value)}
+                        onKeyDown={(e) => replyKeyDown(e, thread)}
+                        rows={3}
+                        aria-label="Reply"
+                        placeholder="Reply in thread"
+                        className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+                      />
+                      <div className="mt-1 flex gap-2">
+                        <button
+                          type="button"
+                          disabled={busy || !replyText.trim()}
+                          onClick={() => void submitReply(thread)}
+                          className="rounded bg-neutral-900 px-2 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+                        >
+                          Post reply
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelReply}
+                          className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setReplyingTo(thread.id);
+                        setReplyText("");
+                      }}
+                      className="mt-2 text-[11px] text-neutral-500 underline-offset-2 hover:underline disabled:opacity-50"
+                    >
+                      Reply in thread
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -292,26 +598,14 @@ export function PrDetail({
               <button
                 type="button"
                 disabled={busy}
-                onClick={() =>
-                  void run(async () => {
-                    await prUpdate(repo, number, {
-                      title: draftTitle,
-                      body: draftBody,
-                    });
-                    setEditing(false);
-                  })
-                }
+                onClick={saveEdit}
                 className="rounded bg-neutral-900 px-2 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
               >
                 Save
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setDraftTitle(pr.title);
-                  setDraftBody(pr.body);
-                  setEditing(false);
-                }}
+                onClick={cancelEdit}
                 className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700"
               >
                 Cancel
@@ -321,7 +615,7 @@ export function PrDetail({
             isOpen && (
               <button
                 type="button"
-                onClick={() => setEditing(true)}
+                onClick={openEdit}
                 className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700"
               >
                 Edit
@@ -435,5 +729,82 @@ function Badge({ children }: { children: React.ReactNode }) {
     <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] dark:bg-neutral-800">
       {children}
     </span>
+  );
+}
+
+/** Copies text to the clipboard, falling back to a hidden textarea when the
+ * async clipboard API is unavailable (older webviews). */
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+/** Renders sanitized markdown (see src/markdown.ts). Clicks on links open
+ * the system browser via `openUrl` instead of navigating the webview; a
+ * right-click offers Copy link / Open in browser. */
+function Markdown({ source }: { source: string }) {
+  const [menu, setMenu] = useState<{ x: number; y: number; href: string } | null>(null);
+
+  const hrefOf = (event: { target: EventTarget | null }): string | null => {
+    const anchor = (event.target as HTMLElement).closest("a");
+    return anchor?.getAttribute("href") ?? null;
+  };
+
+  return (
+    <>
+      <div
+        className="markdown text-neutral-700 dark:text-neutral-300"
+        onClick={(e) => {
+          const href = hrefOf(e);
+          if (!href) return;
+          e.preventDefault();
+          if (/^https?:\/\//.test(href)) void openUrl(href);
+        }}
+        onContextMenu={(e) => {
+          const href = hrefOf(e);
+          if (!href) return;
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY, href });
+        }}
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(source) }}
+      />
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: "Copy link",
+              onSelect: () => {
+                void copyText(menu.href);
+                setMenu(null);
+              },
+            },
+            ...(/^https?:\/\//.test(menu.href)
+              ? [
+                  {
+                    label: "Open in browser",
+                    onSelect: () => {
+                      void openUrl(menu.href);
+                      setMenu(null);
+                    },
+                  },
+                ]
+              : []),
+          ]}
+        />
+      )}
+    </>
   );
 }

@@ -248,7 +248,7 @@ impl GitHubClient {
               reviewRequested: search(query: "is:open is:pr review-requested:@me", type: ISSUE, first: 50) {
                 nodes { ...prFields }
               }
-              assigned: search(query: "is:open assignee:@me", type: ISSUE, first: 50) {
+              assigned: search(query: "is:open is:pr assignee:@me", type: ISSUE, first: 50) {
                 nodes { ...prFields }
               }
               authored: search(query: "is:open is:pr author:@me", type: ISSUE, first: 50) {
@@ -280,13 +280,13 @@ impl GitHubClient {
             .map_err(DaemonError::GitHub)?;
 
         let mut items = Vec::new();
-        for node in resp.data.review_requested.nodes {
+        for node in resp.review_requested.nodes {
             items.push(node.into_action_item(&self.account_id, ItemKind::ReviewRequested));
         }
-        for node in resp.data.assigned.nodes {
+        for node in resp.assigned.nodes {
             items.push(node.into_action_item(&self.account_id, ItemKind::Assigned));
         }
-        for node in resp.data.authored.nodes {
+        for node in resp.authored.nodes {
             if let Some(item) = node.into_ready_to_merge_item(&self.account_id) {
                 items.push(item);
             }
@@ -363,13 +363,11 @@ fn classify_reason(reason: &str) -> ItemKind {
     }
 }
 
+/// The payload octocrab's `graphql` returns for the poller query: it already
+/// unwraps GitHub's outer `{ "data": ... }` envelope, so this type must not
+/// carry a `data` field of its own.
 #[derive(Debug, Clone, Deserialize)]
 struct GraphQlEnvelope {
-    data: GraphQlData,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct GraphQlData {
     #[serde(rename = "reviewRequested")]
     review_requested: SearchResult,
     assigned: SearchResult,
@@ -393,8 +391,8 @@ struct PrNode {
     #[serde(rename = "isDraft")]
     is_draft: bool,
     #[serde(rename = "reviewDecision")]
-    review_decision: String,
-    mergeable: String,
+    review_decision: Option<String>,
+    mergeable: Option<String>,
     author: Option<PrAuthor>,
     repository: PrRepository,
     commits: PrCommits,
@@ -454,8 +452,8 @@ impl PrNode {
     /// authored PR needs its owner. Every other combination produces
     /// nothing — those PRs belong to the view, not the inbox.
     fn is_ready_to_merge(&self) -> bool {
-        self.review_decision == "APPROVED"
-            && self.mergeable == "MERGEABLE"
+        self.review_decision.as_deref() == Some("APPROVED")
+            && self.mergeable.as_deref() == Some("MERGEABLE")
             && !self.is_draft
             && self.ci_status() != CiStatus::Failing
     }
@@ -513,8 +511,8 @@ mod tests {
             created_at: "2026-08-13T12:00:00Z".into(),
             updated_at: "2026-08-13T12:00:00Z".into(),
             is_draft,
-            review_decision: review_decision.into(),
-            mergeable: mergeable.into(),
+            review_decision: Some(review_decision.into()),
+            mergeable: Some(mergeable.into()),
             author: Some(PrAuthor { login: "me".into() }),
             repository: PrRepository {
                 name_with_owner: "acme/api".into(),

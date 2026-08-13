@@ -65,7 +65,10 @@ enum PrAction {
     Merge,
     Comments,
     Comment,
+    CommentReply,
+    Resolve,
     Branches,
+    Labels,
 }
 
 /// Params shared by every `pr.*` method. Unused fields stay `None` for
@@ -100,12 +103,25 @@ struct PrParams {
     head_sha: Option<String>,
     #[serde(default)]
     comment: Option<String>,
+    /// Parent comment id for `pr.comment_reply`.
+    #[serde(default)]
+    in_reply_to: Option<u64>,
+    /// Thread id for `pr.resolve`; `resolved` picks the mutation.
+    #[serde(default)]
+    thread_id: Option<String>,
+    /// Desired state for `pr.resolve`.
+    #[serde(default)]
+    resolved: Option<bool>,
 }
 
 impl PrParams {
     fn number(&self) -> Result<u64> {
         self.number
             .ok_or_else(|| DaemonError::InvalidParams("number is required".into()))
+    }
+
+    fn require_u64(&self, value: Option<u64>, name: &str) -> Result<u64> {
+        value.ok_or_else(|| DaemonError::InvalidParams(format!("{name} is required")))
     }
 
     fn require<'a>(&self, value: Option<&'a String>, name: &str) -> Result<&'a str> {
@@ -236,7 +252,10 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "pr.merge" => handle_pr(state, req.params, PrAction::Merge).await,
         "pr.comments" => handle_pr(state, req.params, PrAction::Comments).await,
         "pr.comment" => handle_pr(state, req.params, PrAction::Comment).await,
+        "pr.comment_reply" => handle_pr(state, req.params, PrAction::CommentReply).await,
+        "pr.resolve" => handle_pr(state, req.params, PrAction::Resolve).await,
         "pr.branches" => handle_pr(state, req.params, PrAction::Branches).await,
+        "pr.labels" => handle_pr(state, req.params, PrAction::Labels).await,
         "prs.list" => handle_prs_list(state, req.params).await,
         "poll.now" => handle_poll_now(state).await,
         other => Err(DaemonError::UnknownMethod(other.to_string())),
@@ -362,7 +381,25 @@ async fn handle_pr(
                 )
                 .await?,
         ),
+        PrAction::CommentReply => serde_json::to_value(
+            client
+                .pr_comment_reply(
+                    repo,
+                    params.number()?,
+                    params.require_u64(params.in_reply_to, "in_reply_to")?,
+                    params.require(params.body.as_ref(), "body")?,
+                )
+                .await?,
+        ),
+        PrAction::Resolve => {
+            let thread_id = params.require(params.thread_id.as_ref(), "thread_id")?;
+            let resolved = params
+                .resolved
+                .ok_or_else(|| DaemonError::InvalidParams("resolved is required".into()))?;
+            serde_json::to_value(client.resolve_thread(thread_id, resolved).await?)
+        }
         PrAction::Branches => serde_json::to_value(client.list_branches(repo).await?),
+        PrAction::Labels => serde_json::to_value(client.list_labels(repo).await?),
     };
 
     value.map_err(|e| DaemonError::Config(e.to_string()))

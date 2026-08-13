@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 
 use gitsurveil_proto::{
-    Check, CiStatus, Comment, MergeMethod, Mergeability, PrRole, PrState, PullRequestDetail,
-    PullRequestSummary, ReviewDecision, Reviewer,
+    Check, CiStatus, Comment, Conversation, MergeMethod, Mergeability, PrRole, PrState,
+    PullRequestDetail, PullRequestSummary, ReviewDecision, ReviewThread, Reviewer,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -236,31 +236,41 @@ impl GitHubClient {
         Ok(())
     }
 
-    /// Fetches the conversation: issue comments plus review comments, oldest
-    /// first. Both are shown in one list because that's how the conversation
-    /// actually reads.
-    pub async fn pr_comments(&self, repo: &str, number: u64) -> Result<Vec<Comment>> {
+    /// Fetches the conversation: issue comments via REST plus review threads
+    /// via GraphQL (the only way to get each thread's id and resolve state).
+    ///
+    /// One request each: the issue timeline, and the PR's threads with their
+    /// comments. Resolving is a mutation on a thread id, so the id must come
+    /// from the same query the UI reads — it is the key both render and
+    /// resolve act on.
+    pub async fn pr_comments(&self, repo: &str, number: u64) -> Result<Conversation> {
         let issue_path = format!("/repos/{repo}/issues/{number}/comments");
-        let review_path = format!("/repos/{repo}/pulls/{number}/comments");
-        let (issue, review) = tokio::join!(
-            self.get_json::<Vec<RawComment>>(&issue_path),
-            self.get_json::<Vec<RawComment>>(&review_path)
-        );
+        let issue_comments: Vec<RawComment> = self.get_json(&issue_path).await.unwrap_or_default();
 
-        let mut comments: Vec<Comment> = issue
-            .unwrap_or_default()
-            .into_iter()
-            .chain(review.unwrap_or_default())
-            .map(|c| Comment {
-                id: c.id,
-                author: c.user.map(|u| u.login).unwrap_or_default(),
-                body: c.body,
-                created_at: c.created_at,
-                path: c.path,
-            })
-            .collect();
-        comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        Ok(comments)
+        let (owner, name) = repo
+            .split_once('/')
+            .ok_or_else(|| DaemonError::Config(format!("invalid repo slug: {repo}")))?;
+        let envelope: RawConversationEnvelope = self
+            .octocrab
+            .graphql(&conversation_request(owner, name, number))
+            .await
+            .map_err(DaemonError::GitHub)?;
+        let review_threads = envelope
+            .repository
+            .pull_request
+            .map(|p| p.review_threads.nodes)
+            .unwrap_or_default();
+
+        Ok(Conversation {
+            issue_comments: issue_comments
+                .into_iter()
+                .map(|c| c.into_comment())
+                .collect(),
+            review_threads: review_threads
+                .into_iter()
+                .map(|t| t.into_thread())
+                .collect(),
+        })
     }
 
     /// Posts a top-level comment on a PR.
@@ -271,13 +281,40 @@ impl GitHubClient {
                 json!({ "body": body }),
             )
             .await?;
-        Ok(Comment {
-            id: created.id,
-            author: created.user.map(|u| u.login).unwrap_or_default(),
-            body: created.body,
-            created_at: created.created_at,
-            path: created.path,
-        })
+        Ok(created.into_comment())
+    }
+
+    /// Replies to the last comment in a review thread. GitHub's REST API
+    /// threads a reply by passing the parent comment's id as `in_reply_to`.
+    pub async fn pr_comment_reply(
+        &self,
+        repo: &str,
+        number: u64,
+        in_reply_to: u64,
+        body: &str,
+    ) -> Result<Comment> {
+        let created: RawComment = self
+            .post_json(
+                &format!("/repos/{repo}/pulls/{number}/comments"),
+                json!({ "body": body, "in_reply_to": in_reply_to }),
+            )
+            .await?;
+        Ok(created.into_comment())
+    }
+
+    /// Resolves (`true`) or unresolves (`false`) a review thread. Needs the
+    /// thread's GraphQL id, which `pr_comments` returns.
+    pub async fn resolve_thread(&self, thread_id: &str, resolved: bool) -> Result<bool> {
+        let resp: RawResolveEnvelope = self
+            .octocrab
+            .graphql(&resolve_thread_request(thread_id, resolved))
+            .await
+            .map_err(DaemonError::GitHub)?;
+        Ok(resp
+            .resolved_thread
+            .or(resp.unresolved_thread)
+            .map(|t| t.thread.is_resolved)
+            .unwrap_or(resolved))
     }
 
     /// Branches in a repository, for the create-PR form's pickers.
@@ -286,6 +323,16 @@ impl GitHubClient {
             .get_json(&format!("/repos/{repo}/branches?per_page=100"))
             .await?;
         Ok(branches.into_iter().map(|b| b.name).collect())
+    }
+
+    /// Labels defined on a repository, for the edit form's picker. Assigning a
+    /// label that isn't in this list is still valid — GitHub creates it — so
+    /// the picker also lets the user type a new name.
+    pub async fn list_labels(&self, repo: &str) -> Result<Vec<String>> {
+        let labels: Vec<RawLabel> = self
+            .get_json(&format!("/repos/{repo}/labels?per_page=100"))
+            .await?;
+        Ok(labels.into_iter().map(|l| l.name).collect())
     }
 
     /// Lists the pull requests relevant to this account's user
@@ -313,6 +360,7 @@ fragment prFields on PullRequest {{
   __typename number title url createdAt updatedAt state isDraft reviewDecision mergeable
   author {{ login }} repository {{ nameWithOwner }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
+  reviewThreads(first: 100) {{ nodes {{ isResolved }} }}
 }}"#,
             qualifier = qualifier
         );
@@ -325,9 +373,9 @@ fragment prFields on PullRequest {{
             .map_err(DaemonError::GitHub)?;
 
         let sets = [
-            (resp.data.authored.nodes, PrRole::Authored),
-            (resp.data.review_requested.nodes, PrRole::ReviewRequested),
-            (resp.data.assigned.nodes, PrRole::Assigned),
+            (resp.authored.nodes, PrRole::Authored),
+            (resp.review_requested.nodes, PrRole::ReviewRequested),
+            (resp.assigned.nodes, PrRole::Assigned),
         ];
         let mut summaries = merged_summaries(&self.account_id, sets, state);
         // The UI sorts by recency anyway; returning them pre-sorted keeps the
@@ -335,6 +383,51 @@ fragment prFields on PullRequest {{
         summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(summaries)
     }
+}
+
+/// Builds the review-thread query body.
+///
+/// `owner`/`name` come from a caller-supplied slug and travel as **variables**,
+/// never interpolated into the query text: a `"` in either would otherwise
+/// close the string literal and let arbitrary GraphQL run under the user's
+/// token. Split out from the request so that guarantee is testable offline.
+fn conversation_request(owner: &str, name: &str, number: u64) -> serde_json::Value {
+    const QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          id isResolved path
+          comments(first: 100) {
+            nodes { databaseId author { login } body createdAt }
+          }
+        }
+      }
+    }
+  }
+}"#;
+    json!({
+        "query": QUERY,
+        "variables": { "owner": owner, "name": name, "number": number },
+    })
+}
+
+/// Builds the resolve/unresolve mutation body.
+///
+/// The operation is chosen between two constants, so no caller input reaches
+/// the query text; `thread_id` travels as a variable for the same reason as
+/// [`conversation_request`].
+fn resolve_thread_request(thread_id: &str, resolved: bool) -> serde_json::Value {
+    const RESOLVE: &str = r#"mutation($threadId: ID!) {
+  resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } }
+}"#;
+    const UNRESOLVE: &str = r#"mutation($threadId: ID!) {
+  unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } }
+}"#;
+    json!({
+        "query": if resolved { RESOLVE } else { UNRESOLVE },
+        "variables": { "threadId": thread_id },
+    })
 }
 
 /// The search qualifier for a requested [`PrState`]. `None` means "all
@@ -473,6 +566,114 @@ struct RawComment {
     path: Option<String>,
 }
 
+impl RawComment {
+    fn into_comment(self) -> Comment {
+        Comment {
+            id: self.id,
+            author: self.user.map(|u| u.login).unwrap_or_default(),
+            body: self.body,
+            created_at: self.created_at,
+            path: self.path,
+        }
+    }
+}
+
+// ---- GraphQL shapes for `pr_comments` and `resolve_thread` --------------
+// octocrab's `graphql` strips GitHub's outer `{ "data": ... }` envelope, so
+// these match the query's aliases directly, like `SearchEnvelope` below.
+
+#[derive(Debug, Deserialize)]
+struct RawConversationEnvelope {
+    repository: RawRepository,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRepository {
+    #[serde(rename = "pullRequest")]
+    pull_request: Option<RawPullRequestThreads>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPullRequestThreads {
+    #[serde(rename = "reviewThreads")]
+    review_threads: RawReviewThreads,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawReviewThreads {
+    nodes: Vec<RawReviewThread>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawReviewThread {
+    id: String,
+    #[serde(rename = "isResolved")]
+    is_resolved: bool,
+    #[serde(default)]
+    path: Option<String>,
+    comments: RawThreadComments,
+}
+
+impl RawReviewThread {
+    fn into_thread(self) -> ReviewThread {
+        ReviewThread {
+            id: self.id,
+            path: self.path,
+            resolved: self.is_resolved,
+            comments: self.comments.nodes.into_iter().map(|c| c.into_comment()).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawThreadComments {
+    nodes: Vec<RawThreadComment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawThreadComment {
+    #[serde(rename = "databaseId")]
+    #[serde(default)]
+    database_id: Option<u64>,
+    author: Option<RawUser>,
+    body: String,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+}
+
+impl RawThreadComment {
+    fn into_comment(self) -> Comment {
+        Comment {
+            // GraphQL exposes no thread comment id via REST-consistent paths,
+            // but `databaseId` is the REST id — the value replies must use.
+            id: self.database_id.unwrap_or_default(),
+            author: self.author.map(|u| u.login).unwrap_or_default(),
+            body: self.body,
+            created_at: self.created_at,
+            path: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawResolveEnvelope {
+    #[serde(rename = "resolveReviewThread")]
+    resolved_thread: Option<RawResolvedThread>,
+    #[serde(rename = "unresolveReviewThread")]
+    unresolved_thread: Option<RawResolvedThread>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawResolvedThread {
+    thread: RawResolvedState,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawResolvedState {
+    #[serde(rename = "isResolved")]
+    is_resolved: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawBranch {
     name: String,
@@ -484,13 +685,11 @@ struct RawBranch {
 // fields that module reads, and the poller gets richer fields than this in
 // Part 2 (`ReadyToMerge`), so sharing would couple two independent queries.
 
+/// The payload octocrab's `graphql` returns for the PR search query: it
+/// already unwraps GitHub's outer `{ "data": ... }` envelope, so this type
+/// must not carry a `data` field of its own.
 #[derive(Debug, Deserialize)]
 struct SearchEnvelope {
-    data: SearchData,
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchData {
     authored: SearchResult,
     #[serde(rename = "reviewRequested")]
     review_requested: SearchResult,
@@ -522,6 +721,22 @@ struct SearchPrNode {
     author: Option<SearchAuthor>,
     repository: SearchRepository,
     commits: SearchCommits,
+    /// Review threads can be absent before any review exists, so treat the
+    /// whole block as optional rather than assume GitHub always returns it.
+    #[serde(default, rename = "reviewThreads")]
+    review_threads: Option<SearchReviewThreads>,
+}
+
+/// A PR's review threads, used to count threads still awaiting attention.
+#[derive(Debug, Deserialize)]
+struct SearchReviewThreads {
+    nodes: Vec<SearchReviewThreadNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchReviewThreadNode {
+    #[serde(rename = "isResolved")]
+    is_resolved: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -572,6 +787,14 @@ impl SearchPrNode {
                 _ => CiStatus::None,
             })
             .unwrap_or(CiStatus::None);
+        // Threads without `isResolved` set to true are still open; GitHub's
+        // `first: 100` cap is generous enough that a PR with more open threads
+        // than that is worth flagging at the cap anyway.
+        let unresolved_threads = self
+            .review_threads
+            .as_ref()
+            .map(|t| t.nodes.iter().filter(|n| !n.is_resolved).count() as u64)
+            .unwrap_or(0);
         PullRequestSummary {
             account_id: account_id.to_string(),
             repo: self.repository.name_with_owner,
@@ -596,6 +819,7 @@ impl SearchPrNode {
                 // the same "nobody has decided anything" as NONE.
                 _ => ReviewDecision::None,
             },
+            unresolved_threads,
             // UNKNOWN (not yet computed) is the safe default: it must never
             // be conflated with a conflict.
             mergeable: match self.mergeable.as_deref() {
@@ -638,6 +862,45 @@ mod tests {
     }
 
     #[test]
+    fn search_envelope_parses_unwrapped_data() {
+        // octocrab's `graphql` strips GitHub's outer `{ "data": ... }` before
+        // deserializing, so `SearchEnvelope` must parse the payload directly.
+        // This embeds a slice of a real response: camelCase keys, a null
+        // `reviewDecision` (no reviews yet), and a null `mergeable` (still
+        // being computed) — any of which previously failed the whole query.
+        let payload = serde_json::json!({
+            "authored": {
+                "nodes": [{
+                    "__typename": "PullRequest",
+                    "number": 13,
+                    "title": "t",
+                    "url": "u",
+                    "createdAt": "2026-08-13T12:00:00Z",
+                    "updatedAt": "2026-08-13T12:00:00Z",
+                    "state": "OPEN",
+                    "isDraft": false,
+                    "reviewDecision": null,
+                    "mergeable": null,
+                    "author": { "login": "me" },
+                    "repository": { "nameWithOwner": "acme/api" },
+                    "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] },
+                    "reviewThreads": {
+                        "nodes": [
+                            { "isResolved": false },
+                            { "isResolved": true }
+                        ]
+                    }
+                }]
+            },
+            "reviewRequested": { "nodes": [] },
+            "assigned": { "nodes": [] }
+        });
+        let envelope: SearchEnvelope =
+            serde_json::from_value(payload).expect("unwrapped search payload parses");
+        assert_eq!(envelope.authored.nodes[0].review_threads.as_ref().unwrap().nodes.len(), 2);
+    }
+
+    #[test]
     fn null_mergeable_is_unknown_not_an_error() {
         // GitHub computes mergeability asynchronously, so a fresh PR reports
         // null for a moment. Treating that as "cannot merge" would flash a
@@ -666,7 +929,29 @@ mod tests {
                 name_with_owner: repo.into(),
             },
             commits: SearchCommits { nodes: vec![] },
+            review_threads: Some(SearchReviewThreads { nodes: vec![] }),
         }
+    }
+
+    #[test]
+    fn unresolved_threads_counts_only_unresolved_threads() {
+        // AC: the row badge must report open threads, not every thread.
+        let mut node = search_node("acme/api", 1, "OPEN");
+        node.review_threads = Some(SearchReviewThreads {
+            nodes: vec![
+                SearchReviewThreadNode { is_resolved: false },
+                SearchReviewThreadNode { is_resolved: false },
+                SearchReviewThreadNode { is_resolved: true },
+            ],
+        });
+        let summary = node.into_summary("acc-1");
+        assert_eq!(summary.unresolved_threads, 2);
+    }
+
+    #[test]
+    fn no_review_threads_is_zero_unresolved() {
+        let summary = search_node("acme/api", 1, "OPEN").into_summary("acc-1");
+        assert_eq!(summary.unresolved_threads, 0);
     }
 
     #[test]
@@ -749,4 +1034,113 @@ mod tests {
         );
         assert!(summaries.is_empty());
     }
+
+    #[test]
+    fn conversation_envelope_parses_threads_with_comments() {
+        // Slice of a real `reviewThreads` response: `databaseId` is the REST
+        // comment id replies must use; `path` is null for general threads.
+        let payload = serde_json::json!({
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "nodes": [{
+                            "id": "PRR_kwLOAbc123",
+                            "isResolved": false,
+                            "path": "src/api.rs",
+                            "comments": {
+                                "nodes": [{
+                                    "databaseId": 9001,
+                                    "author": { "login": "carol" },
+                                    "body": "Nits on line 5",
+                                    "createdAt": "2026-08-13T12:00:00Z"
+                                }]
+                            }
+                        }]
+                    }
+                }
+            }
+        });
+        let envelope: RawConversationEnvelope =
+            serde_json::from_value(payload).expect("unwrapped conversation payload parses");
+        let threads = envelope
+            .repository
+            .pull_request
+            .unwrap()
+            .review_threads
+            .nodes;
+        assert_eq!(threads.len(), 1);
+        let thread = threads.into_iter().next().unwrap().into_thread();
+        assert_eq!(thread.id, "PRR_kwLOAbc123");
+        assert_eq!(thread.resolved, false);
+        assert_eq!(thread.path.as_deref(), Some("src/api.rs"));
+        assert_eq!(thread.comments.len(), 1);
+        assert_eq!(thread.comments[0].id, 9001);
+        assert_eq!(thread.comments[0].author, "carol");
+        assert_eq!(thread.comments[0].body, "Nits on line 5");
+    }
+
+    #[test]
+    fn conversation_envelope_handles_missing_pull_request() {
+        // A bad number or a deleted PR leaves `pullRequest` null; the
+        // conversation must degrade to whatever issue comments exist.
+        let payload = serde_json::json!({
+            "repository": { "pullRequest": null }
+        });
+        let envelope: RawConversationEnvelope =
+            serde_json::from_value(payload).expect("null pull request parses");
+        let threads = envelope.repository.pull_request;
+        assert!(threads.is_none());
+    }
+
+    #[test]
+    fn resolve_envelope_parses_the_present_mutation() {
+        // Only one of the two aliased fields exists per request, so both must
+        // be optional and the caller picks whichever is present.
+        let payload = serde_json::json!({
+            "resolveReviewThread": {
+                "thread": { "isResolved": true }
+            }
+        });
+        let envelope: RawResolveEnvelope =
+            serde_json::from_value(payload).expect("resolve payload parses");
+        let resolved = envelope
+            .resolved_thread
+            .or(envelope.unresolved_thread)
+            .map(|t| t.thread.is_resolved)
+            .unwrap_or(false);
+        assert!(resolved);
+    }
+
+    /// Guards the GraphQL-injection fix. Both queries once interpolated
+    /// caller-supplied values into the query text, so a `"` could close the
+    /// string literal and append a second operation that ran under the user's
+    /// token. The queries must be constants with values passed as variables.
+    ///
+    /// Asserting on the built request bodies rather than on source text: the
+    /// body is what actually reaches GitHub.
+    #[test]
+    fn caller_supplied_values_travel_as_graphql_variables() {
+        let hostile = r#"x") { evil } injected: unresolveReviewThread(input: {threadId: "y"#;
+
+        let resolve = resolve_thread_request(hostile, true);
+        let query = resolve["query"].as_str().expect("query is a string");
+        assert!(
+            !query.contains(hostile),
+            "hostile thread id must not appear in the query text"
+        );
+        assert_eq!(
+            resolve["variables"]["threadId"], hostile,
+            "the value belongs in variables, verbatim"
+        );
+
+        let hostile_owner = r#"ow"ner"#;
+        let conversation = conversation_request(hostile_owner, "name", 1);
+        let query = conversation["query"].as_str().expect("query is a string");
+        assert!(
+            !query.contains(hostile_owner),
+            "hostile owner must not appear in the query text"
+        );
+        assert_eq!(conversation["variables"]["owner"], hostile_owner);
+    }
+
 }

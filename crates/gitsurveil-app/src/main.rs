@@ -72,7 +72,10 @@ fn main() {
             commands::pr_merge,
             commands::pr_comments,
             commands::pr_comment,
+            commands::pr_comment_reply,
+            commands::pr_resolve,
             commands::pr_branches,
+            commands::pr_labels,
             commands::prs_list,
             commands::conflict_prepare,
             commands::conflict_file,
@@ -484,10 +487,54 @@ mod commands {
         .map_err(|e| e.to_string())
     }
 
+    /// Replies inside a review thread; `in_reply_to` is the last comment's id.
+    #[tauri::command]
+    pub async fn pr_comment_reply(
+        repo: String,
+        number: u64,
+        in_reply_to: u64,
+        body: String,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call(
+            "pr.comment_reply",
+            serde_json::json!({
+                "repo": repo,
+                "number": number,
+                "in_reply_to": in_reply_to,
+                "body": body,
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Resolves or unresolves a review thread by its GraphQL id.
+    #[tauri::command]
+    pub async fn pr_resolve(
+        repo: String,
+        thread_id: String,
+        resolved: bool,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call(
+            "pr.resolve",
+            serde_json::json!({ "repo": repo, "thread_id": thread_id, "resolved": resolved }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
     /// Branch names in a repository, for the create-PR form.
     #[tauri::command]
     pub async fn pr_branches(repo: String) -> Result<serde_json::Value, String> {
         crate::daemon::pr_call("pr.branches", serde_json::json!({ "repo": repo }))
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Label names defined on a repository, for the edit form's picker.
+    #[tauri::command]
+    pub async fn pr_labels(repo: String) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call("pr.labels", serde_json::json!({ "repo": repo }))
             .await
             .map_err(|e| e.to_string())
     }

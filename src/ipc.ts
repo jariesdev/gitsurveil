@@ -13,6 +13,7 @@ import type {
   Comment,
   ConflictFile,
   ConflictSession,
+  Conversation,
   MergeMethod,
   PrState,
   PullRequestDetail,
@@ -166,9 +167,9 @@ export function prMerge(
   return invoke<void>("pr_merge", { repo, number, method, headSha, title });
 }
 
-/** The conversation on a pull request. */
-export function prComments(repo: string, number: number): Promise<Comment[]> {
-  return invoke<Comment[]>("pr_comments", { repo, number });
+/** The conversation on a pull request: issue comments plus review threads. */
+export function prComments(repo: string, number: number): Promise<Conversation> {
+  return invoke<Conversation>("pr_comments", { repo, number });
 }
 
 /** Posts a comment on a pull request. */
@@ -180,9 +181,42 @@ export function prComment(
   return invoke<Comment>("pr_comment", { repo, number, body });
 }
 
+/** Replies inside a review thread; `inReplyTo` is the last comment's id. */
+export function prCommentReply(
+  repo: string,
+  number: number,
+  inReplyTo: number,
+  body: string,
+): Promise<Comment> {
+  return invoke<Comment>("pr_comment_reply", {
+    repo,
+    number,
+    inReplyTo,
+    body,
+  });
+}
+
+/** Resolves or unresolves a review thread by its GraphQL id. */
+export function prResolve(
+  repo: string,
+  threadId: string,
+  resolved: boolean,
+): Promise<{ resolved: boolean }> {
+  return invoke<{ resolved: boolean }>("pr_resolve", {
+    repo,
+    threadId,
+    resolved,
+  });
+}
+
 /** Branch names in a repository, for the create-PR form. */
 export function prBranches(repo: string): Promise<string[]> {
   return invoke<string[]>("pr_branches", { repo });
+}
+
+/** Label names defined on a repository, for the edit form's picker. */
+export function prLabels(repo: string): Promise<string[]> {
+  return invoke<string[]>("pr_labels", { repo });
 }
 
 /**
