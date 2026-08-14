@@ -59,6 +59,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
+      # The app crate's build script embeds the daemon as a sidecar resource and
+      # fails without it (binaries/ is gitignored). Stage it for the host triple
+      # so `cargo test`/`cargo build --workspace` can compile the app.
+      - name: Stage the daemon sidecar
+        shell: bash
+        run: ./scripts/bundle-daemon.sh
+
       - name: Test
         run: cargo test --workspace
 
@@ -91,6 +98,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # Same sidecar requirement as the rust job: `cargo doc --workspace` builds
+      # the app crate, which embeds the daemon and fails without it staged.
+      - name: Stage the daemon sidecar
+        shell: bash
+        run: ./scripts/bundle-daemon.sh
       - name: cargo doc
         env:
           RUSTDOCFLAGS: -D warnings
