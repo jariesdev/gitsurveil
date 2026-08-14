@@ -24,6 +24,14 @@
 
   <rect x="72" y="72" width="880" height="880" rx="200" fill="url(#bg)"/>
 
+  <!-- Two rays in the empty top-left corner: light for the thing that is
+       growing. Warm and slightly transparent so they sit behind the tree in
+       the eye's order of attention rather than competing with the nodes. -->
+  <g stroke="#ffd97d" stroke-width="34" stroke-linecap="round" opacity="0.85">
+    <path d="M 196 236 L 282 322"/>
+    <path d="M 306 168 L 368 230"/>
+  </g>
+
   <!-- Scaled about the point where the trunk meets the soil, so the tree
        grows without lifting out of the ground. -->
   <g transform="translate(512 792) scale(1.16) translate(-512 -792)">
@@ -36,11 +44,12 @@
     <path d="M 512 540 C 512 420 600 380 688 380"/>
   </g>
 
-  <!-- A commit node at every tip. The newest, topping the trunk, is accented
-       so it reads first. -->
-  <circle cx="336" cy="480" r="62" fill="#e8edf2"/>
-  <circle cx="688" cy="380" r="62" fill="#e8edf2"/>
-  <circle cx="512" cy="352" r="72" fill="#4c9aff"/>
+  <!-- A commit node at every tip, one colour each. GitHub's palette, which is
+       already tuned to read on a dark background. -->
+  <circle cx="336" cy="480" r="62" fill="#f85149"/>
+  <circle cx="688" cy="380" r="62" fill="#58a6ff"/>
+  <!-- The trunk is the main branch, so its head is the largest node. -->
+  <circle cx="512" cy="352" r="72" fill="#3fb950"/>
   </g>
 
   <!-- Soil last, so it overlaps the base of the trunk: the tree disappears
