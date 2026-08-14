@@ -54,8 +54,11 @@ fn main() {
             commands::remove_account,
             commands::list_accounts,
             commands::list_rules,
+            commands::notifications_prefs,
+            commands::notifications_set_pref,
             commands::repos_list,
             commands::repos_set,
+            commands::repos_set_notify,
             commands::repos_remove,
             commands::repos_new,
             commands::repos_ack_new,
@@ -312,6 +315,20 @@ mod commands {
         crate::daemon::list_rules().await.map_err(|e| e.to_string())
     }
 
+    /// Lists every item kind's current notification preference.
+    #[tauri::command]
+    pub async fn notifications_prefs() -> Result<Vec<gitsurveil_proto::KindPref>, String> {
+        crate::daemon::notifications_prefs().await.map_err(|e| e.to_string())
+    }
+
+    /// Sets whether `kind` may produce a notification.
+    #[tauri::command]
+    pub async fn notifications_set_pref(kind: String, enabled: bool) -> Result<(), String> {
+        crate::daemon::notifications_set_pref(&kind, enabled)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     /// Lists the repository catalog (`specs/desktop-ui.md`): every discovered
     /// repo plus the orgs each account can filter by.
     #[tauri::command]
@@ -324,6 +341,19 @@ mod commands {
     #[tauri::command]
     pub async fn repos_set(repo: String, path: String) -> Result<gitsurveil_proto::Repository, String> {
         crate::daemon::repos_set(&repo, &path).await.map_err(|e| e.to_string())
+    }
+
+    /// Sets whether a repo's items feed notifications and the Pull Requests
+    /// view, independent of its clone-tracking state.
+    #[tauri::command]
+    pub async fn repos_set_notify(
+        account_id: String,
+        repo: String,
+        enabled: bool,
+    ) -> Result<gitsurveil_proto::Repository, String> {
+        crate::daemon::repos_set_notify(&account_id, &repo, enabled)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Removes a repo's local clone path; idempotent. The catalog row survives.

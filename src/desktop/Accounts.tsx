@@ -8,14 +8,16 @@
  */
 
 import { useState } from "react";
-import { addAccount, removeAccount } from "../ipc";
-import type { AccountRef } from "../types";
+import { addAccount, removeAccount, reposSetNotify } from "../ipc";
+import type { AccountRef, RepoCatalog } from "../types";
 
 export function Accounts({
   accounts,
+  catalog,
   onChange,
 }: {
   accounts: AccountRef[];
+  catalog: RepoCatalog;
   onChange: () => void;
 }) {
   const [host, setHost] = useState("github.com");
@@ -59,23 +61,27 @@ export function Accounts({
       ) : (
         <ul className="mt-4 divide-y divide-neutral-200 dark:divide-neutral-800">
           {accounts.map((account) => (
-            <li
-              key={account.id}
-              className="flex items-center justify-between py-2"
-            >
-              <div>
-                <div className="text-sm">{account.login}</div>
-                <div className="text-[11px] text-neutral-500">
-                  {account.host}
+            <li key={account.id} className="py-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm">{account.login}</div>
+                  <div className="text-[11px] text-neutral-500">
+                    {account.host}
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => void handleRemove(account)}
+                  className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700"
+                >
+                  Remove
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => void handleRemove(account)}
-                className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700"
-              >
-                Remove
-              </button>
+              <NotifyChecklist
+                account={account}
+                catalog={catalog}
+                onChange={onChange}
+              />
             </li>
           ))}
         </ul>
@@ -134,6 +140,58 @@ export function Accounts({
         </button>
       </form>
     </div>
+  );
+}
+
+/**
+ * Per-account repo checklist: which repos feed notifications and the Pull
+ * Requests view (`notify_enabled`). Collapsed by default — `<details>` needs
+ * no state of its own, and an account can have far more repos than fit
+ * comfortably inline.
+ */
+function NotifyChecklist({
+  account,
+  catalog,
+  onChange,
+}: {
+  account: AccountRef;
+  catalog: RepoCatalog;
+  onChange: () => void;
+}) {
+  const repos = catalog.repos.filter((r) => r.account_id === account.id);
+  if (repos.length === 0) return null;
+
+  async function toggle(repo: string, enabled: boolean) {
+    await reposSetNotify(account.id, repo, enabled);
+    onChange();
+  }
+
+  return (
+    <details className="mt-2">
+      <summary className="cursor-pointer text-xs text-neutral-500">
+        Notify me about {repos.filter((r) => r.notify_enabled).length} of{" "}
+        {repos.length} repositories
+      </summary>
+      <ul className="mt-2 space-y-1.5 pl-1">
+        {repos.map((repo) => (
+          <li key={repo.full_name} className="flex items-center gap-2">
+            <input
+              id={`notify-${account.id}-${repo.full_name}`}
+              type="checkbox"
+              checked={repo.notify_enabled}
+              onChange={(e) => void toggle(repo.full_name, e.target.checked)}
+              className="h-4 w-4"
+            />
+            <label
+              htmlFor={`notify-${account.id}-${repo.full_name}`}
+              className="text-xs"
+            >
+              {repo.full_name}
+            </label>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

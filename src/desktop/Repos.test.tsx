@@ -61,6 +61,7 @@ function repository(overrides: Partial<Repository> = {}): Repository {
     clone_url: "https://github.com/acme/api.git",
     clone_path: null,
     tracked: false,
+    notify_enabled: true,
     first_seen_at: "2026-08-13T12:00:00Z",
     notified_at: null,
     last_refreshed_at: "2026-08-13T12:00:00Z",

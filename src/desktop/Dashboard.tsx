@@ -26,7 +26,9 @@ const ALL_KINDS: ItemKind[] = [
   "review_requested",
   "review_state_changed",
   "mentioned",
+  "reviewed_by_me",
   "assigned",
+  "authored",
   "participating",
   "ready_to_merge",
 ];

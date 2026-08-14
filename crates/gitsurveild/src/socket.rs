@@ -14,8 +14,8 @@ use std::time::Instant;
 
 use chrono::Utc;
 use gitsurveil_proto::{
-    AccountRef, AuthKind, CloneStatus, ConflictSession, PrState, PullRequestSummary, Request,
-    Response, StatusResult,
+    AccountRef, AuthKind, CloneStatus, ConflictSession, ItemKind, KindPref, PrState,
+    PullRequestSummary, Request, Response, StatusResult,
 };
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -252,8 +252,11 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "accounts.add" => handle_accounts_add(state, req.params).await,
         "accounts.remove" => handle_accounts_remove(state, req.params),
         "rules.list" => handle_rules_list(state),
+        "notifications.prefs" => handle_notifications_prefs(state),
+        "notifications.set_pref" => handle_notifications_set_pref(state, req.params),
         "repos.list" => handle_repos_list(state),
         "repos.set" => handle_repos_set(state, req.params).await,
+        "repos.set_notify" => handle_repos_set_notify(state, req.params),
         "repos.remove" => handle_repos_remove(state, req.params).await,
         "repos.new" => handle_repos_new(state),
         "repos.ack_new" => handle_repos_ack_new(state, req.params),
@@ -464,7 +467,14 @@ async fn handle_prs_list(state: &ServerState, params: serde_json::Value) -> Resu
         let token = keychain::get_token(&account.id)?
             .ok_or_else(|| DaemonError::UnknownAccount(account.id.clone()))?;
         let client = GitHubClient::new(&account.id, &account.api_base, &token)?;
-        summaries.extend(client.list_pull_requests(params.state).await?);
+        let muted = state.store.muted_repos(&account.id)?;
+        summaries.extend(
+            client
+                .list_pull_requests(params.state)
+                .await?
+                .into_iter()
+                .filter(|pr| !muted.contains(&pr.repo)),
+        );
     }
     Ok(serde_json::to_value(summaries).expect("Vec<PullRequestSummary> always serializes"))
 }
@@ -637,6 +647,51 @@ fn handle_rules_list(state: &ServerState) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(&state.rules).expect("Vec<Rule> always serializes"))
 }
 
+/// Every item kind in the order the Settings checklist renders them (highest
+/// base priority first), used by both `notifications.prefs` and any future
+/// caller that needs the full kind list.
+const ALL_KINDS: [ItemKind; 9] = [
+    ItemKind::CiFailed,
+    ItemKind::ReviewRequested,
+    ItemKind::ReviewStateChanged,
+    ItemKind::ReadyToMerge,
+    ItemKind::Mentioned,
+    ItemKind::ReviewedByMe,
+    ItemKind::Assigned,
+    ItemKind::Authored,
+    ItemKind::Participating,
+];
+
+/// Every item kind's current notification preference (`specs/notifications.md`
+/// § Preferences), enabled by default. This gates only the OS
+/// notification/tray interruption, not what the Dashboard/history show.
+fn handle_notifications_prefs(state: &ServerState) -> Result<serde_json::Value> {
+    let disabled = state.store.disabled_kinds()?;
+    let prefs: Vec<KindPref> = ALL_KINDS
+        .iter()
+        .map(|&kind| KindPref { kind, enabled: !disabled.contains(&kind) })
+        .collect();
+    Ok(serde_json::to_value(prefs).expect("Vec<KindPref> always serializes"))
+}
+
+/// Params for `notifications.set_pref`.
+#[derive(Debug, Deserialize)]
+struct NotificationSetPrefParams {
+    kind: ItemKind,
+    enabled: bool,
+}
+
+/// Sets one kind's notification preference.
+fn handle_notifications_set_pref(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: NotificationSetPrefParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    state.store.set_notification_pref(params.kind, params.enabled)?;
+    Ok(serde_json::Value::Null)
+}
+
 /// Params for `repos.set`. `path` is the local clone to associate with
 /// `repo` (`"owner/name"`).
 #[derive(Debug, Deserialize)]
@@ -649,6 +704,16 @@ struct RepoSetParams {
 #[derive(Debug, Deserialize)]
 struct RepoRemoveParams {
     repo: String,
+}
+
+/// Params for `repos.set_notify`. Unlike most `repos.*` calls, `account_id`
+/// is explicit rather than inferred: the same repo can have independent
+/// notification settings under different accounts.
+#[derive(Debug, Deserialize)]
+struct RepoSetNotifyParams {
+    account_id: String,
+    repo: String,
+    enabled: bool,
 }
 
 /// Params for `repos.ack_new`. The catalog row's `first_seen_at` is the ack
@@ -692,6 +757,19 @@ fn catalog_repo(state: &ServerState, repo: &str) -> Result<gitsurveil_proto::Rep
 /// old `repos.list` (config block) and `list_orgs` (derived here).
 fn handle_repos_list(state: &ServerState) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(state.store.list_catalog()?).expect("RepoCatalog always serializes"))
+}
+
+/// Sets whether a repo's items feed notifications and the Pull Requests
+/// view, independent of its clone-tracking state (`specs/desktop-ui.md`
+/// Accounts checklist).
+fn handle_repos_set_notify(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: RepoSetNotifyParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let updated = state
+        .store
+        .set_notify_enabled(&params.account_id, &params.repo, params.enabled)?
+        .ok_or_else(|| DaemonError::Config(format!("unknown repo {}", params.repo)))?;
+    Ok(serde_json::to_value(updated).expect("Repository always serializes"))
 }
 
 /// Registers a local clone path for one repo. Validates the path (is a git
@@ -1684,6 +1762,82 @@ mod tests {
         let catalog = resp.result.unwrap();
         assert_eq!(catalog["orgs"][0]["name"], "acme");
         assert_eq!(catalog["repos"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn repos_set_notify_toggles_independently_of_tracked() {
+        let state = test_state();
+        seed_catalog(&state.store);
+
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 15,
+                method: "repos.set_notify".into(),
+                params: serde_json::json!({
+                    "account_id": "acc-1",
+                    "repo": "acme/api",
+                    "enabled": false,
+                }),
+            },
+        )
+        .await;
+        let row = resp.result.unwrap();
+        assert_eq!(row["notify_enabled"], false);
+        assert_eq!(row["tracked"], false, "unrelated to clone tracking");
+
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 16,
+                method: "repos.set_notify".into(),
+                params: serde_json::json!({
+                    "account_id": "acc-1",
+                    "repo": "no/such-repo",
+                    "enabled": true,
+                }),
+            },
+        )
+        .await;
+        let err = resp.error.unwrap();
+        assert!(err.message.contains("unknown repo"));
+    }
+
+    #[tokio::test]
+    async fn notifications_prefs_lists_all_kinds_enabled_by_default_and_toggles() {
+        let state = test_state();
+
+        let resp = dispatch(
+            &state,
+            Request { id: 20, method: "notifications.prefs".into(), params: serde_json::Value::Null },
+        )
+        .await;
+        let prefs = resp.result.unwrap();
+        let prefs = prefs.as_array().unwrap();
+        assert_eq!(prefs.len(), 9, "every ItemKind variant is represented");
+        assert!(prefs.iter().all(|p| p["enabled"] == true));
+
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 21,
+                method: "notifications.set_pref".into(),
+                params: serde_json::json!({ "kind": "authored", "enabled": false }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none());
+
+        let resp = dispatch(
+            &state,
+            Request { id: 22, method: "notifications.prefs".into(), params: serde_json::Value::Null },
+        )
+        .await;
+        let prefs = resp.result.unwrap();
+        let authored = prefs.as_array().unwrap().iter().find(|p| p["kind"] == "authored").unwrap();
+        assert_eq!(authored["enabled"], false);
+        let ci_failed = prefs.as_array().unwrap().iter().find(|p| p["kind"] == "ci_failed").unwrap();
+        assert_eq!(ci_failed["enabled"], true, "unrelated kinds stay enabled");
     }
 
     #[tokio::test]

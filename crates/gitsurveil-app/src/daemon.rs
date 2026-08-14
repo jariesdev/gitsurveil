@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use gitsurveil_proto::{
-    AccountRef, CloneStatus, RegisteredApp, RepoCatalog, Repository, Request, Response,
+    AccountRef, CloneStatus, KindPref, RegisteredApp, RepoCatalog, Repository, Request, Response,
     ScoredItem, StatusResult, WorktreeInfo, WorktreesResult,
 };
 use serde::de::DeserializeOwned;
@@ -176,6 +176,21 @@ pub async fn list_rules() -> Result<serde_json::Value> {
     call("rules.list", serde_json::Value::Null).await
 }
 
+/// Lists every item kind's current notification preference.
+pub async fn notifications_prefs() -> Result<Vec<KindPref>> {
+    call("notifications.prefs", serde_json::Value::Null).await
+}
+
+/// Sets whether `kind` may produce a notification.
+pub async fn notifications_set_pref(kind: &str, enabled: bool) -> Result<()> {
+    let _: serde_json::Value = call(
+        "notifications.set_pref",
+        serde_json::json!({ "kind": kind, "enabled": enabled }),
+    )
+    .await?;
+    Ok(())
+}
+
 /// Lists the repository catalog: every discovered repo with its tracked/clone
 /// state, plus the orgs each account can filter by (`specs/desktop-ui.md`).
 pub async fn repos_list() -> Result<RepoCatalog> {
@@ -186,6 +201,16 @@ pub async fn repos_list() -> Result<RepoCatalog> {
 /// Marks the repo tracked and acks it as seen.
 pub async fn repos_set(repo: &str, path: &str) -> Result<Repository> {
     call("repos.set", serde_json::json!({ "repo": repo, "path": path })).await
+}
+
+/// Sets whether a repo's items feed notifications and the Pull Requests
+/// view, independent of its clone-tracking state.
+pub async fn repos_set_notify(account_id: &str, repo: &str, enabled: bool) -> Result<Repository> {
+    call(
+        "repos.set_notify",
+        serde_json::json!({ "account_id": account_id, "repo": repo, "enabled": enabled }),
+    )
+    .await
 }
 
 /// Removes a repo's local clone path; idempotent. The catalog row survives.

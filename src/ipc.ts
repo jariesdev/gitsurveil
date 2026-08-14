@@ -15,6 +15,8 @@ import type {
   ConflictFile,
   ConflictSession,
   Conversation,
+  ItemKind,
+  KindPref,
   MergeMethod,
   PrState,
   PullRequestDetail,
@@ -111,6 +113,18 @@ export function reposList(): Promise<RepoCatalog> {
 /** Registers an existing local clone path; validates and marks the repo tracked. */
 export function reposSet(repo: string, path: string): Promise<Repository> {
   return invoke<Repository>("repos_set", { repo, path });
+}
+
+/**
+ * Sets whether a repo's items feed notifications and the Pull Requests view,
+ * independent of its clone-tracking state.
+ */
+export function reposSetNotify(
+  accountId: string,
+  repo: string,
+  enabled: boolean,
+): Promise<Repository> {
+  return invoke<Repository>("repos_set_notify", { accountId, repo, enabled });
 }
 
 /** Removes a repo's local clone path. Idempotent; the catalog row survives. */
@@ -296,6 +310,18 @@ export function listPullRequests(args?: {
     accountId: args?.accountId,
     state: args?.state,
   });
+}
+
+// ---- notification preferences (`specs/notifications.md`) ----------------
+
+/** Every item kind's current notification preference, enabled by default. */
+export function notificationsPrefs(): Promise<KindPref[]> {
+  return invoke<KindPref[]>("notifications_prefs");
+}
+
+/** Sets whether `kind` may produce a notification. */
+export function notificationsSetPref(kind: ItemKind, enabled: boolean): Promise<void> {
+  return invoke<void>("notifications_set_pref", { kind, enabled });
 }
 
 // ---- registered apps (`specs/desktop-ui.md`) -----------------------------

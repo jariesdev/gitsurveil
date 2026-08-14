@@ -212,7 +212,11 @@ export function App() {
             />
           )}
           {view === "accounts" && (
-            <Accounts accounts={data.accounts} onChange={() => void load()} />
+            <Accounts
+              accounts={data.accounts}
+              catalog={data.repos}
+              onChange={() => void load()}
+            />
           )}
           {view === "settings" && <Settings />}
           </ViewErrorBoundary>

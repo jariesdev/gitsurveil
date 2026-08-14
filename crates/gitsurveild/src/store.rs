@@ -23,7 +23,7 @@ use rusqlite::{params, Connection};
 use crate::error::{DaemonError, Result};
 use crate::github::client::DiscoveredRepo;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 5;
 
 /// The daemon's persistent state store.
 pub struct Store {
@@ -108,6 +108,7 @@ impl Store {
                 clone_url        TEXT NOT NULL,
                 clone_path       TEXT,
                 tracked          INTEGER NOT NULL DEFAULT 0,
+                notify_enabled   INTEGER NOT NULL DEFAULT 1,
                 first_seen_at    TEXT NOT NULL,
                 notified_at      TEXT,
                 last_refreshed_at TEXT NOT NULL,
@@ -133,6 +134,10 @@ impl Store {
                 command    TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS notification_prefs (
+                kind    TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1
+            );
             ",
         )?;
         // v3: `clone_jobs.target_owned` records whether the daemon created the
@@ -145,6 +150,19 @@ impl Store {
         if !has_target_owned {
             conn.execute_batch(
                 "ALTER TABLE clone_jobs ADD COLUMN target_owned INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        // v4: `repositories.notify_enabled` gates whether a repo's items feed
+        // notifications and the Pull Requests view. Independent of `tracked`,
+        // which gates conflict-resolution eligibility (has a local clone) —
+        // conflating the two would silently repurpose already-tracked repos.
+        let has_notify_enabled = conn
+            .prepare("SELECT 1 FROM pragma_table_info('repositories') WHERE name = 'notify_enabled'")?
+            .query_row([], |_| Ok(()))
+            .is_ok();
+        if !has_notify_enabled {
+            conn.execute_batch(
+                "ALTER TABLE repositories ADD COLUMN notify_enabled INTEGER NOT NULL DEFAULT 1",
             )?;
         }
         conn.execute(
@@ -316,7 +334,11 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
                     created_at, updated_at, first_seen_at, last_seen_at, ci_status, raw_kind
-             FROM items WHERE state = 'open'",
+             FROM items i WHERE state = 'open' AND NOT EXISTS (
+                SELECT 1 FROM repositories r
+                WHERE r.account_id = i.account_id AND r.full_name = i.repo
+                  AND r.notify_enabled = 0
+             )",
         )?;
         let rows = stmt.query_map([], row_to_item)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -330,7 +352,11 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
                     created_at, updated_at, first_seen_at, last_seen_at, ci_status, raw_kind
-             FROM items WHERE state != 'open'
+             FROM items i WHERE state != 'open' AND NOT EXISTS (
+                SELECT 1 FROM repositories r
+                WHERE r.account_id = i.account_id AND r.full_name = i.repo
+                  AND r.notify_enabled = 0
+             )
              ORDER BY last_seen_at DESC
              LIMIT ?1",
         )?;
@@ -439,7 +465,7 @@ impl Store {
         let mut repos_stmt = conn.prepare(
             "SELECT account_id, host, owner, name, full_name, url, description, private,
                     default_branch, clone_url, clone_path, tracked,
-                    first_seen_at, notified_at, last_refreshed_at
+                    first_seen_at, notified_at, last_refreshed_at, notify_enabled
              FROM repositories ORDER BY full_name",
         )?;
         let repos = repos_stmt
@@ -474,7 +500,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT account_id, host, owner, name, full_name, url, description, private,
                     default_branch, clone_url, clone_path, tracked,
-                    first_seen_at, notified_at, last_refreshed_at
+                    first_seen_at, notified_at, last_refreshed_at, notify_enabled
              FROM repositories WHERE tracked = 0 AND notified_at IS NULL
              ORDER BY first_seen_at DESC",
         )?;
@@ -502,7 +528,7 @@ impl Store {
         conn.query_row(
             "SELECT account_id, host, owner, name, full_name, url, description, private,
                     default_branch, clone_url, clone_path, tracked,
-                    first_seen_at, notified_at, last_refreshed_at
+                    first_seen_at, notified_at, last_refreshed_at, notify_enabled
              FROM repositories WHERE account_id = ?1 AND full_name = ?2",
             params![account_id, full_name],
             row_to_repository,
@@ -545,6 +571,42 @@ impl Store {
             "UPDATE repositories SET clone_path = ?3, tracked = 1, notified_at = ?4
              WHERE account_id = ?1 AND full_name = ?2",
             params![account_id, full_name, path, now],
+        )?;
+        drop(conn);
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.find_repo(account_id, full_name)
+    }
+
+    /// Full names of the account's repos with notifications muted
+    /// (`notify_enabled = 0`). Checked by the poller before turning an item
+    /// into a notification candidate, and by the Pull Requests list — the
+    /// one definition of "enabled" both share.
+    pub fn muted_repos(&self, account_id: &str) -> Result<std::collections::HashSet<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT full_name FROM repositories WHERE account_id = ?1 AND notify_enabled = 0",
+        )?;
+        let rows = stmt
+            .query_map(params![account_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<String>>>()?;
+        Ok(rows)
+    }
+
+    /// Sets whether a repo's items feed notifications and the Pull Requests
+    /// view. Returns the updated row, or [`None`] when the repo isn't in the
+    /// catalog. Backs `repos.set_notify`.
+    pub fn set_notify_enabled(
+        &self,
+        account_id: &str,
+        full_name: &str,
+        enabled: bool,
+    ) -> Result<Option<Repository>> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn.execute(
+            "UPDATE repositories SET notify_enabled = ?3 WHERE account_id = ?1 AND full_name = ?2",
+            params![account_id, full_name, enabled as i64],
         )?;
         drop(conn);
         if changed == 0 {
@@ -802,12 +864,41 @@ impl Store {
         let removed = conn.execute("DELETE FROM apps WHERE command = ?1", params![command])?;
         Ok(removed == 1)
     }
+
+    // ---- notification preferences -----------------------------------------
+
+    /// Item kinds the user has turned off notifications for
+    /// (`specs/notifications.md` § Preferences). A kind with no row is
+    /// enabled by default, so a fresh install notifies on everything without
+    /// requiring an opt-in step.
+    pub fn disabled_kinds(&self) -> Result<std::collections::HashSet<ItemKind>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT kind FROM notification_prefs WHERE enabled = 0")?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.iter().map(|s| kind_from_str(s)).collect())
+    }
+
+    /// Sets whether `kind` should produce a notification. Does not affect
+    /// whether items of that kind still appear in the Dashboard or history —
+    /// this only gates the OS notification/tray interruption.
+    pub fn set_notification_pref(&self, kind: ItemKind, enabled: bool) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO notification_prefs (kind, enabled) VALUES (?1, ?2)
+             ON CONFLICT(kind) DO UPDATE SET enabled = excluded.enabled",
+            params![kind_to_str(kind), enabled as i64],
+        )?;
+        Ok(())
+    }
 }
 
 fn row_to_repository(row: &rusqlite::Row) -> rusqlite::Result<Repository> {
     let description: Option<String> = row.get(6)?;
     let private: i64 = row.get(7)?;
     let tracked: i64 = row.get(11)?;
+    let notify_enabled: i64 = row.get(15)?;
     Ok(Repository {
         account_id: row.get(0)?,
         host: row.get(1)?,
@@ -824,6 +915,7 @@ fn row_to_repository(row: &rusqlite::Row) -> rusqlite::Result<Repository> {
         first_seen_at: row.get(12)?,
         notified_at: row.get(13)?,
         last_refreshed_at: row.get(14)?,
+        notify_enabled: notify_enabled != 0,
     })
 }
 
@@ -866,6 +958,8 @@ fn kind_to_str(k: ItemKind) -> &'static str {
         ItemKind::CiFailed => "ci_failed",
         ItemKind::ReviewStateChanged => "review_state_changed",
         ItemKind::ReadyToMerge => "ready_to_merge",
+        ItemKind::Authored => "authored",
+        ItemKind::ReviewedByMe => "reviewed_by_me",
     }
 }
 
@@ -877,6 +971,8 @@ fn kind_from_str(s: &str) -> ItemKind {
         "ci_failed" => ItemKind::CiFailed,
         "review_state_changed" => ItemKind::ReviewStateChanged,
         "ready_to_merge" => ItemKind::ReadyToMerge,
+        "authored" => ItemKind::Authored,
+        "reviewed_by_me" => ItemKind::ReviewedByMe,
         _ => ItemKind::Participating,
     }
 }
@@ -988,6 +1084,28 @@ mod tests {
     }
 
     #[test]
+    fn notification_prefs_default_enabled_and_toggle_persists() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.disabled_kinds().unwrap().is_empty(), "nothing muted by default");
+
+        store
+            .set_notification_pref(ItemKind::Authored, false)
+            .unwrap();
+        assert_eq!(
+            store.disabled_kinds().unwrap(),
+            std::collections::HashSet::from([ItemKind::Authored])
+        );
+
+        // Every other kind is still enabled by default.
+        assert!(!store.disabled_kinds().unwrap().contains(&ItemKind::CiFailed));
+
+        store
+            .set_notification_pref(ItemKind::Authored, true)
+            .unwrap();
+        assert!(store.disabled_kinds().unwrap().is_empty(), "re-enabling clears it");
+    }
+
+    #[test]
     fn mark_done_removes_from_open_items() {
         let store = Store::open_in_memory().unwrap();
         store.upsert_account(&sample_account()).unwrap();
@@ -1086,6 +1204,78 @@ mod tests {
         let row = store.find_repo("acc-1", "acme/api").unwrap().unwrap();
         assert!(!row.tracked);
         assert!(row.clone_path.is_none());
+    }
+
+    #[test]
+    fn notify_enabled_defaults_true_and_is_independent_of_tracked() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store
+            .upsert_catalog("acc-1", "github.com", &[sample_discovered("api")], "t0")
+            .unwrap();
+
+        let row = store.find_repo("acc-1", "acme/api").unwrap().unwrap();
+        assert!(row.notify_enabled, "new repos default to notifying");
+        assert!(!row.tracked, "notify_enabled must not imply clone tracking");
+
+        // Registering a clone (tracked = true) must not touch notify_enabled.
+        store
+            .set_repo_path("acc-1", "acme/api", "/tmp/acme-api", "t1")
+            .unwrap();
+        let row = store.find_repo("acc-1", "acme/api").unwrap().unwrap();
+        assert!(row.tracked);
+        assert!(row.notify_enabled);
+
+        let row = store
+            .set_notify_enabled("acc-1", "acme/api", false)
+            .unwrap()
+            .expect("repo is in the catalog");
+        assert!(!row.notify_enabled);
+        assert!(row.tracked, "muting notifications must not untrack the clone");
+
+        assert_eq!(
+            store.muted_repos("acc-1").unwrap(),
+            std::collections::HashSet::from(["acme/api".to_string()])
+        );
+
+        assert!(store
+            .set_notify_enabled("acc-1", "no/such-repo", true)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn muted_repo_items_are_excluded_from_open_and_history() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store
+            .upsert_catalog("acc-1", "github.com", &[sample_discovered("api")], "t0")
+            .unwrap();
+        store.upsert_item(&sample_item("item-1")).unwrap();
+        assert_eq!(store.open_items().unwrap().len(), 1);
+
+        store
+            .set_notify_enabled("acc-1", "acme/api", false)
+            .unwrap();
+        assert!(
+            store.open_items().unwrap().is_empty(),
+            "muting a repo hides its open items immediately"
+        );
+
+        store.mark_item_done("item-1").unwrap();
+        assert!(
+            store.history_items(50).unwrap().is_empty(),
+            "muting a repo hides its history too"
+        );
+
+        store
+            .set_notify_enabled("acc-1", "acme/api", true)
+            .unwrap();
+        assert_eq!(
+            store.history_items(50).unwrap().len(),
+            1,
+            "unmuting restores it with no data loss"
+        );
     }
 
     #[test]

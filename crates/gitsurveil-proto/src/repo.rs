@@ -54,6 +54,11 @@ pub struct Repository {
     pub notified_at: Option<String>,
     /// When discovery last refreshed this row.
     pub last_refreshed_at: String,
+    /// Whether this repo's items should feed notifications and the Pull
+    /// Requests view. Independent of `tracked` — a repo can have a local
+    /// clone without being watched, or be watched with no clone registered.
+    /// Defaults to `true` so existing repos keep notifying with no opt-in.
+    pub notify_enabled: bool,
 }
 
 /// One organization (or owner login) discovered for an account, used to group

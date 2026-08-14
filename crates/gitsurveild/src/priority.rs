@@ -25,7 +25,11 @@ fn base_score(kind: ItemKind) -> i64 {
         // Your own work is one click from landing.
         ItemKind::ReadyToMerge => 65,
         ItemKind::Mentioned => 50,
+        // Activity on a PR you've already invested review time in outranks
+        // activity on one you merely authored — someone is waiting on you.
+        ItemKind::ReviewedByMe => 45,
         ItemKind::Assigned => 40,
+        ItemKind::Authored => 30,
         ItemKind::Participating => 20,
     }
 }
@@ -293,7 +297,9 @@ mod tests {
             (ItemKind::ReviewStateChanged, 70, Severity::High),
             (ItemKind::ReadyToMerge, 65, Severity::High),
             (ItemKind::Mentioned, 50, Severity::Normal),
+            (ItemKind::ReviewedByMe, 45, Severity::Normal),
             (ItemKind::Assigned, 40, Severity::Normal),
+            (ItemKind::Authored, 30, Severity::Normal),
             (ItemKind::Participating, 20, Severity::Info),
         ];
         for (kind, expected_score, expected_severity) in cases {

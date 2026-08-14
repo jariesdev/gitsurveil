@@ -68,10 +68,12 @@ pub async fn poll_all_accounts(store: &Store, rules: &[Rule]) -> Option<u64> {
         }
     };
 
+    let disabled_kinds = store.disabled_kinds().unwrap_or_default();
+
     let mut max_requested_interval = None;
     let mut notify_candidates = Vec::new();
     for account in accounts {
-        match poll_account(store, &account, rules).await {
+        match poll_account(store, &account, rules, &disabled_kinds).await {
             Ok((requested, mut candidates)) => {
                 max_requested_interval = max_requested_interval.max(requested);
                 notify_candidates.append(&mut candidates);
@@ -101,6 +103,7 @@ async fn poll_account(
     store: &Store,
     account: &AccountRef,
     rules: &[Rule],
+    disabled_kinds: &std::collections::HashSet<gitsurveil_proto::ItemKind>,
 ) -> crate::error::Result<(Option<u64>, Vec<ScoredItem>)> {
     let token = keychain::get_token(&account.id)?
         .ok_or_else(|| DaemonError::UnknownAccount(account.id.clone()))?;
@@ -127,6 +130,7 @@ async fn poll_account(
         }
     }
 
+    let muted_repos = store.muted_repos(&account.id)?;
     let previous = store.items_for_account(&account.id)?;
     let previous_by_id: HashMap<&str, &gitsurveil_proto::ActionItem> =
         previous.iter().map(|i| (i.id.as_str(), i)).collect();
@@ -144,18 +148,10 @@ async fn poll_account(
             }
         }
 
-        // Only genuinely new items, or ones whose CI just broke, are even
-        // considered for an interruption. Everything else is a silent update:
-        // it will still show up in the list and the tray color.
-        let newly_relevant = match change_kind {
-            ChangeKind::New => true,
-            ChangeKind::Carried => false,
-            ChangeKind::Updated => {
-                item.ci_status == CiStatus::Failing
-                    && prev.map(|p| p.ci_status) != Some(CiStatus::Failing)
-            }
-        };
-        if newly_relevant {
+        if newly_relevant(change_kind, &item, prev)
+            && !muted_repos.contains(&item.repo)
+            && !disabled_kinds.contains(&item.kind)
+        {
             candidates.push(priority::score_item(&item, rules, now));
         }
 
@@ -168,4 +164,101 @@ async fn poll_account(
     }
 
     Ok((requested_interval, candidates))
+}
+
+/// Whether a diffed item is worth considering for a notification. Only
+/// genuinely new items, or ones whose CI just broke, normally qualify —
+/// everything else is a silent update: it will still show up in the list and
+/// the tray color. `Authored` and `ReviewedByMe` are the exception — their
+/// whole point is to surface *any* activity, so every update counts, not
+/// just CI.
+fn newly_relevant(
+    change_kind: ChangeKind,
+    item: &gitsurveil_proto::ActionItem,
+    prev: Option<&gitsurveil_proto::ActionItem>,
+) -> bool {
+    match change_kind {
+        ChangeKind::New => true,
+        ChangeKind::Carried => false,
+        ChangeKind::Updated => {
+            matches!(
+                item.kind,
+                gitsurveil_proto::ItemKind::Authored | gitsurveil_proto::ItemKind::ReviewedByMe
+            ) || (item.ci_status == CiStatus::Failing
+                && prev.map(|p| p.ci_status) != Some(CiStatus::Failing))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gitsurveil_proto::{ItemKind, ItemState};
+
+    fn item(kind: ItemKind, ci_status: CiStatus) -> gitsurveil_proto::ActionItem {
+        gitsurveil_proto::ActionItem {
+            id: "id".into(),
+            account_id: "acc-1".into(),
+            kind,
+            state: ItemState::Open,
+            repo: "acme/api".into(),
+            number: Some(1),
+            title: "t".into(),
+            url: "https://github.com/acme/api/pull/1".into(),
+            author: "a".into(),
+            created_at: "2026-08-01T00:00:00Z".into(),
+            updated_at: "2026-08-01T00:00:00Z".into(),
+            first_seen_at: "2026-08-01T00:00:00Z".into(),
+            last_seen_at: "2026-08-01T00:00:00Z".into(),
+            ci_status,
+            raw_kind: "x".into(),
+        }
+    }
+
+    #[test]
+    fn new_items_are_always_relevant() {
+        assert!(newly_relevant(
+            ChangeKind::New,
+            &item(ItemKind::ReviewRequested, CiStatus::None),
+            None
+        ));
+    }
+
+    #[test]
+    fn carried_items_are_never_relevant() {
+        assert!(!newly_relevant(
+            ChangeKind::Carried,
+            &item(ItemKind::ReviewRequested, CiStatus::Failing),
+            None
+        ));
+    }
+
+    #[test]
+    fn ordinary_kinds_only_update_on_a_ci_failure_transition() {
+        let prev = item(ItemKind::ReviewRequested, CiStatus::Passing);
+        let now_failing = item(ItemKind::ReviewRequested, CiStatus::Failing);
+        assert!(newly_relevant(ChangeKind::Updated, &now_failing, Some(&prev)));
+
+        // Already failing before -> not a fresh transition.
+        let prev_failing = item(ItemKind::ReviewRequested, CiStatus::Failing);
+        assert!(!newly_relevant(ChangeKind::Updated, &now_failing, Some(&prev_failing)));
+
+        // A non-CI update (e.g. a new comment) doesn't qualify.
+        let now_comment = item(ItemKind::ReviewRequested, CiStatus::Passing);
+        assert!(!newly_relevant(ChangeKind::Updated, &now_comment, Some(&prev)));
+    }
+
+    #[test]
+    fn authored_and_reviewed_by_me_treat_every_update_as_relevant() {
+        let prev = item(ItemKind::Authored, CiStatus::Passing);
+        let updated = item(ItemKind::Authored, CiStatus::Passing);
+        assert!(
+            newly_relevant(ChangeKind::Updated, &updated, Some(&prev)),
+            "any activity on an authored PR counts, not just CI"
+        );
+
+        let prev = item(ItemKind::ReviewedByMe, CiStatus::Passing);
+        let updated = item(ItemKind::ReviewedByMe, CiStatus::Passing);
+        assert!(newly_relevant(ChangeKind::Updated, &updated, Some(&prev)));
+    }
 }

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Ordering here is not significance order — significance is computed by the
 /// priority engine (`specs/priority-engine.md`), not encoded in the enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
     /// The user was requested as a reviewer on a pull request.
@@ -30,6 +30,27 @@ pub enum ItemKind {
     /// click from landing. Fired only on the transition, never for a
     /// merely-open authored PR (`specs/priority-engine.md`).
     ReadyToMerge,
+    /// A pull request authored by the user received new activity (a commit,
+    /// comment, review, or state change) — unlike [`Self::CiFailed`] and
+    /// [`Self::ReviewStateChanged`], which single out specific transitions on
+    /// authored PRs, this fires on any update to one.
+    Authored,
+    /// A pull request the user reviewed received new activity since. Distinct
+    /// from [`Self::ReviewRequested`], which is about a review still owed.
+    ReviewedByMe,
+}
+
+/// One item kind's notification preference (`notifications.prefs`,
+/// `specs/notifications.md` § Preferences). Gates only the OS
+/// notification/tray interruption for that kind — items of a disabled kind
+/// still appear in the Dashboard and history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KindPref {
+    /// Which kind this preference applies to.
+    pub kind: ItemKind,
+    /// Whether items of this kind may produce a notification. Defaults to
+    /// `true` for every kind.
+    pub enabled: bool,
 }
 
 /// Local lifecycle state of an item. Distinct from GitHub's own

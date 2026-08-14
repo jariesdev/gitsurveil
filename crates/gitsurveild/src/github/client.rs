@@ -330,6 +330,9 @@ impl GitHubClient {
               authored: search(query: "is:open is:pr author:@me", type: ISSUE, first: 50) {
                 nodes { ...prFields }
               }
+              reviewedByMe: search(query: "is:open is:pr reviewed-by:@me", type: ISSUE, first: 50) {
+                nodes { ...prFields }
+              }
             }
             fragment prFields on PullRequest {
               number
@@ -363,9 +366,13 @@ impl GitHubClient {
             items.push(node.into_action_item(&self.account_id, ItemKind::Assigned));
         }
         for node in resp.authored.nodes {
-            if let Some(item) = node.into_ready_to_merge_item(&self.account_id) {
+            if let Some(item) = node.clone().into_ready_to_merge_item(&self.account_id) {
                 items.push(item);
             }
+            items.push(node.into_action_item(&self.account_id, ItemKind::Authored));
+        }
+        for node in resp.reviewed_by_me.nodes {
+            items.push(node.into_action_item(&self.account_id, ItemKind::ReviewedByMe));
         }
         Ok(items)
     }
@@ -490,6 +497,8 @@ struct GraphQlEnvelope {
     review_requested: SearchResult,
     assigned: SearchResult,
     authored: SearchResult,
+    #[serde(rename = "reviewedByMe")]
+    reviewed_by_me: SearchResult,
 }
 
 #[derive(Debug, Clone, Deserialize)]

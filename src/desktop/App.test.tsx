@@ -32,6 +32,7 @@ const mockIpc = vi.hoisted(() => {
         clone_url: "https://github.com/ariesragingriverict/paypal.git",
         clone_path: null,
         tracked: false,
+        notify_enabled: true,
         first_seen_at: "2026-08-14T15:22:26.237158+00:00",
         notified_at: "2026-08-14T15:22:26.237158+00:00",
         last_refreshed_at: "2026-08-14T15:22:26.237158+00:00",
@@ -49,6 +50,7 @@ const mockIpc = vi.hoisted(() => {
         clone_url: "https://github.com/wthvillas/villasplatform.git",
         clone_path: null,
         tracked: false,
+        notify_enabled: true,
         first_seen_at: "2026-08-14T15:22:26.237158+00:00",
         notified_at: "2026-08-14T15:22:26.237158+00:00",
         last_refreshed_at: "2026-08-14T15:22:26.237158+00:00",
@@ -66,6 +68,7 @@ const mockIpc = vi.hoisted(() => {
     reposList: vi.fn(),
     reposNew: vi.fn(),
     appsList: vi.fn(),
+    notificationsPrefs: vi.fn(),
     undismissItem: vi.fn(),
     listPullRequests: vi.fn(),
     prDetail: vi.fn(),
@@ -93,6 +96,7 @@ const mockIpc = vi.hoisted(() => {
   m.reposList.mockResolvedValue(catalog);
   m.reposNew.mockResolvedValue([]);
   m.appsList.mockResolvedValue([]);
+  m.notificationsPrefs.mockResolvedValue([]);
   m.listPullRequests.mockResolvedValue([]);
   m.prDetail.mockRejectedValue(new Error("not opened"));
   m.pollNow.mockResolvedValue(undefined);

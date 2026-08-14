@@ -15,7 +15,9 @@ export type ItemKind =
   | "participating"
   | "ci_failed"
   | "review_state_changed"
-  | "ready_to_merge";
+  | "ready_to_merge"
+  | "authored"
+  | "reviewed_by_me";
 
 /** Local lifecycle state of an item, distinct from GitHub's own state. */
 export type ItemState = "open" | "done" | "dismissed";
@@ -40,6 +42,16 @@ export interface ActionItem {
   last_seen_at: string;
   ci_status: CiStatus;
   raw_kind: string;
+}
+
+/**
+ * One item kind's notification preference (`notifications.prefs`). Gates
+ * only the OS notification/tray interruption for that kind — items of a
+ * disabled kind still appear in the Dashboard and history.
+ */
+export interface KindPref {
+  kind: ItemKind;
+  enabled: boolean;
 }
 
 /** Coarse urgency band derived from an item's score. */
@@ -74,6 +86,8 @@ export const KIND_LABELS: Record<ItemKind, string> = {
   ci_failed: "CI failed",
   review_state_changed: "Changes requested",
   ready_to_merge: "Ready to merge",
+  authored: "Your PR",
+  reviewed_by_me: "PR you reviewed",
 };
 
 /** Display order for severity groups, most urgent first. */
@@ -153,6 +167,12 @@ export interface Repository {
   notified_at: string | null;
   /** When discovery last refreshed this row. */
   last_refreshed_at: string;
+  /**
+   * Whether this repo's items feed notifications and the Pull Requests view.
+   * Independent of `tracked` — a repo can have a local clone without being
+   * watched, or be watched with no clone registered. Defaults to `true`.
+   */
+  notify_enabled: boolean;
 }
 
 /** One organization (or owner login) discovered for an account. */

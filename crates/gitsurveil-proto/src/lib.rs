@@ -20,7 +20,7 @@ pub use apps::RegisteredApp;
 pub use conflict::{
     ConflictFile, ConflictFileSummary, ConflictHunk, ConflictSegment, ConflictSession,
 };
-pub use item::{AccountRef, ActionItem, AuthKind, CiStatus, ItemKind, ItemState};
+pub use item::{AccountRef, ActionItem, AuthKind, CiStatus, ItemKind, ItemState, KindPref};
 pub use pr::{
     Check, Comment, Conversation, MergeMethod, Mergeability, PrRole, PrState, PullRequestDetail,
     PullRequestSummary, ReviewDecision, ReviewThread, Reviewer,

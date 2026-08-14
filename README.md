@@ -250,11 +250,19 @@ opens the full window:
   `wt-{owner}-{name}-{branch}` next to the clone. Right-click a worktree to
   **Open with…** a registered app (the daemon runs `command <path>`) or to
   delete it — deleting removes its directory but keeps its branch.
-- **Settings** — the **Open with… applications** for worktree menus: give each
-  a name and an **Application or Command** (an executable on your PATH, an
-  absolute path, or one picked with the **Browse…** file dialog). You only get
-  an "Open with…" menu when at least one app is registered.
-- **Accounts** — add or remove accounts.
+- **Settings** — a notification-kind checklist (review requested, assigned,
+  mentioned, participating, CI failed, changes requested, ready to merge,
+  your PR has activity, a PR you reviewed has activity) checked by default;
+  unchecking a kind only stops its desktop notification — it still appears in
+  the Dashboard and history. Below that, the **Open with… applications** for
+  worktree menus: give each a name and an **Application or Command** (an
+  executable on your PATH, an absolute path, or one picked with the
+  **Browse…** file dialog). You only get an "Open with…" menu when at least
+  one app is registered.
+- **Accounts** — add or remove accounts. Each account with discovered repos
+  gets a checklist to choose which repos feed notifications, the Dashboard,
+  and the Pull Requests view — independent of which repos have a local clone
+  registered. New repos default to on.
 
 Clicking a pull request opens a detail pane beside the list: description,
 reviewers, checks, and the full conversation, with buttons to edit the title
@@ -306,6 +314,8 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `accounts.add` | Validate a token and register an account |
 | `accounts.remove` | Remove an account, its items, and its token |
 | `rules.list` | The active priority rules |
+| `notifications.prefs` | Every item kind's notification preference, enabled by default |
+| `notifications.set_pref` | Set whether a kind may produce a notification (Dashboard/history are unaffected) |
 | `poll.now` | Check GitHub immediately |
 | `pr.detail` | Full detail for one pull request |
 | `pr.create` / `pr.update` | Create a PR, or edit title/body/base/labels/reviewers |
@@ -322,6 +332,7 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `repos.clone` | Start a background HTTPS clone; returns a `job_id` |
 | `repos.clone_status` | Progress of a clone job (bytes received; the total is unknowable, so it stays 0) |
 | `repos.set` | Register an existing local clone as a repo's path (validated) |
+| `repos.set_notify` | Set whether a repo's items feed notifications and the Pull Requests view (independent of clone tracking) |
 | `repos.remove` | Forget a repo's clone path (does not delete files) |
 | `repos.worktrees` | A repo's user-created worktrees plus the branches a new one can use |
 | `repos.worktree_add` | Create a worktree (existing branch or a new one); nothing pre-existing is touched |

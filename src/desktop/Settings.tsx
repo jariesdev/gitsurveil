@@ -1,25 +1,52 @@
 /**
  * Application settings (`specs/desktop-ui.md`).
  *
- * Currently one section: the "Open with…" applications offered in the
- * Repositories pane's worktree context menus. The daemon owns the registry
- * (`apps.add` / `apps.remove`) and spawns `command <path>` when one is chosen;
- * this pane just lists and edits it. Apps are loaded on mount rather than
- * through the window-wide load, so the shared `App` state doesn't carry rows
- * it never renders.
+ * Two sections: which notification kinds may interrupt you
+ * (`notifications.prefs` / `notifications.set_pref`), and the "Open with…"
+ * applications offered in the Repositories pane's worktree context menus. The
+ * daemon owns both registries; this pane just lists and edits them. Data is
+ * loaded on mount rather than through the window-wide load, so the shared
+ * `App` state doesn't carry rows it never renders.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { open as pickFile } from "@tauri-apps/plugin-dialog";
-import { appsAdd, appsList, appsRemove } from "../ipc";
-import type { RegisteredApp } from "../types";
+import {
+  appsAdd,
+  appsList,
+  appsRemove,
+  notificationsPrefs,
+  notificationsSetPref,
+} from "../ipc";
+import { KIND_LABELS, type KindPref, type RegisteredApp } from "../types";
 
 export function Settings() {
   const [apps, setApps] = useState<RegisteredApp[]>([]);
+  const [prefs, setPrefs] = useState<KindPref[]>([]);
+  const [prefsError, setPrefsError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    notificationsPrefs()
+      .then(setPrefs)
+      .catch((e) => setPrefsError(String(e)));
+  }, []);
+
+  async function togglePref(kind: KindPref["kind"], enabled: boolean) {
+    setPrefsError(null);
+    setPrefs((prev) => prev.map((p) => (p.kind === kind ? { ...p, enabled } : p)));
+    try {
+      await notificationsSetPref(kind, enabled);
+    } catch (e) {
+      // Roll back on failure — the daemon didn't persist it, so the
+      // checkbox must not claim otherwise.
+      setPrefs((prev) => prev.map((p) => (p.kind === kind ? { ...p, enabled: !enabled } : p)));
+      setPrefsError(String(e));
+    }
+  }
 
   /** Browses for an executable and fills the command field with its path. */
   const pickExecutable = useCallback(async () => {
@@ -75,7 +102,37 @@ export function Settings() {
     <div className="mx-auto max-w-2xl p-6">
       <h2 className="text-base font-semibold">Settings</h2>
 
-      <h3 className="mt-6 text-sm font-medium">Open with… applications</h3>
+      <h3 className="mt-6 text-sm font-medium">Notifications</h3>
+      <p className="mt-1 text-xs text-neutral-500">
+        Which kinds of activity may interrupt you with a desktop notification.
+        Unchecking a kind never hides it from the Dashboard or history — it
+        only stops the interruption.
+      </p>
+
+      {prefsError && (
+        <p role="alert" className="mt-2 text-xs text-red-600 dark:text-red-400">
+          {prefsError}
+        </p>
+      )}
+
+      <ul className="mt-3 space-y-1.5">
+        {prefs.map((pref) => (
+          <li key={pref.kind} className="flex items-center gap-2">
+            <input
+              id={`notify-kind-${pref.kind}`}
+              type="checkbox"
+              checked={pref.enabled}
+              onChange={(e) => void togglePref(pref.kind, e.target.checked)}
+              className="h-4 w-4"
+            />
+            <label htmlFor={`notify-kind-${pref.kind}`} className="text-sm">
+              {KIND_LABELS[pref.kind]}
+            </label>
+          </li>
+        ))}
+      </ul>
+
+      <h3 className="mt-8 text-sm font-medium">Open with… applications</h3>
       <p className="mt-1 text-xs text-neutral-500">
         Apps offered in the "Open with…" submenu of worktree context menus.
         Each is an executable on your PATH or an absolute path to one; choosing
