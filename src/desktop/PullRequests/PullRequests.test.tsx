@@ -69,6 +69,25 @@ describe("PullRequests row context menu", () => {
     });
   });
 
+  it("copies the PR URL from a row's context menu", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    render(<PullRequests accounts={[account]} onOpenRepos={() => {}} />);
+
+    const row = await screen.findByText("Add rate limiting");
+    fireEvent.contextMenu(row, { clientX: 120, clientY: 80 });
+
+    const item = await screen.findByRole("menuitem", { name: "Copy URL" });
+    fireEvent.click(item);
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("https://github.com/acme/api/pull/482");
+    });
+  });
+
   it("dismisses the menu without opening anything when clicking away", async () => {
     render(<PullRequests accounts={[account]} onOpenRepos={() => {}} />);
 

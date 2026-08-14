@@ -1,6 +1,9 @@
 /** One row of the dashboard or history list. */
 
+import { useState } from "react";
 import { KIND_LABELS, type ScoredItem, type Severity } from "../types";
+import { copyText } from "./clipboard";
+import { ContextMenu } from "./ContextMenu";
 
 /** Dot color per severity band, matching the tray icon palette. */
 const SEVERITY_DOT: Record<Severity, string> = {
@@ -32,8 +35,16 @@ export function ItemRow({
   /** Omitted in history, where there is nothing left to dismiss. */
   onDismiss?: () => void;
 }) {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+
   return (
-    <div className="group flex items-center gap-3 border-b border-neutral-200 px-4 py-2 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50">
+    <div
+      className="group flex items-center gap-3 border-b border-neutral-200 px-4 py-2 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenu({ x: event.clientX, y: event.clientY });
+      }}
+    >
       <span
         className={`h-2 w-2 shrink-0 rounded-full ${SEVERITY_DOT[item.severity]} ${
           item.muted ? "opacity-40" : ""
@@ -94,6 +105,23 @@ export function ItemRow({
         >
           Dismiss
         </button>
+      )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: "Copy URL",
+              onSelect: () => {
+                void copyText(item.url);
+                setMenu(null);
+              },
+            },
+          ]}
+        />
       )}
     </div>
   );

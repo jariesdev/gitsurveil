@@ -21,6 +21,7 @@ import {
   prUpdate,
 } from "../ipc";
 import { renderMarkdown } from "../markdown";
+import { copyText } from "./clipboard";
 import { ContextMenu } from "./ContextMenu";
 import type {
   Conversation,
@@ -730,23 +731,6 @@ function Badge({ children }: { children: React.ReactNode }) {
       {children}
     </span>
   );
-}
-
-/** Copies text to the clipboard, falling back to a hidden textarea when the
- * async clipboard API is unavailable (older webviews). */
-async function copyText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  document.execCommand("copy");
-  textarea.remove();
 }
 
 /** Renders sanitized markdown (see src/markdown.ts). Clicks on links open

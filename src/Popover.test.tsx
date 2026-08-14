@@ -5,7 +5,7 @@
  * likely to hit first and the easiest one to get wrong.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Popover } from "./Popover";
 import type { ScoredItem, StatusResult } from "./types";
@@ -149,5 +149,27 @@ describe("Popover", () => {
     render(<Popover />);
 
     expect(await screen.findByLabelText("CI failing")).toBeInTheDocument();
+  });
+
+  it("copies the item URL from a row's context menu", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    vi.mocked(listItems).mockResolvedValue([item()]);
+    vi.mocked(daemonStatus).mockResolvedValue(status);
+
+    render(<Popover />);
+
+    const row = await screen.findByText("Fix the thing");
+    fireEvent.contextMenu(row, { clientX: 40, clientY: 30 });
+
+    const menuItem = await screen.findByRole("menuitem", { name: "Copy URL" });
+    fireEvent.click(menuItem);
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("https://github.com/acme/api/pull/482");
+    });
   });
 });

@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listPullRequests, openUrl, reposList } from "../../ipc";
+import { copyText } from "../clipboard";
 import { ContextMenu } from "../ContextMenu";
 import type {
   AccountRef,
@@ -427,6 +428,13 @@ export function PullRequests({
               label: `Open in ${accountProvider(accounts, menu.pr.account_id)}`,
               onSelect: () => {
                 void openUrl(menu.pr.url);
+                setMenu(null);
+              },
+            },
+            {
+              label: "Copy URL",
+              onSelect: () => {
+                void copyText(menu.pr.url);
                 setMenu(null);
               },
             },
