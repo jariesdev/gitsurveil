@@ -91,9 +91,10 @@ Quitting the app doesn't stop monitoring. The daemon never listens on a network
 port, and tokens live only in the OS keychain — never in the database, config
 files, or logs.
 
-Each webview is **destroyed** when its window closes, not hidden, and rebuilt
-when reopened. That's what keeps an idle menubar app cheap: with everything
-closed, no webview process exists at all.
+Webviews are hidden, not destroyed, when their window is dismissed — the
+popover stays warm between tray clicks so it opens instantly. A background task
+destroys the popover's webview after it has sat hidden for an idle timeout, so
+an abandoned popover eventually costs nothing.
 
 ## Install a release build
 
@@ -243,7 +244,15 @@ opens the full window:
   progress bar), or point it at an existing clone. Tracked repos are what the
   conflict resolver works on — always on a throwaway worktree, never in your
   working tree. Clones are HTTPS-only and are never pushed to without an
-  explicit action.
+  explicit action. Rows with a registered clone expand to show the repo's
+  **  worktrees** (and to add or delete them): pick an existing branch or type a
+  new one, and the daemon creates `wt-{owner}-{name}-{branch}` next to the
+  clone. Right-click a worktree to **Open with…** a registered app (the daemon
+  runs `command <path>`) or to delete it — deleting removes its directory but
+  keeps its branch.
+- **Settings** — the **Open with… applications** for worktree menus: give each
+  a name and the bare executable on your PATH (`code`, `phpstorm`, …). You only
+  get an "Open with…" menu when at least one app is registered.
 - **Accounts** — add or remove accounts.
 
 Clicking a pull request opens a detail pane beside the list: description,
@@ -313,6 +322,13 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `repos.clone_status` | Progress of a clone job (bytes received; the total is unknowable, so it stays 0) |
 | `repos.set` | Register an existing local clone as a repo's path (validated) |
 | `repos.remove` | Forget a repo's clone path (does not delete files) |
+| `repos.worktrees` | A repo's user-created worktrees plus the branches a new one can use |
+| `repos.worktree_add` | Create a worktree (existing branch or a new one); nothing pre-existing is touched |
+| `repos.worktree_remove` | Remove a worktree and its directory; the branch survives |
+| `apps.list` | The registered "Open with…" applications |
+| `apps.add` | Register an application (name + bare command on PATH) |
+| `apps.remove` | Forget a registered application |
+| `apps.open` | Open a path with a registered app (`command <path>`, spawned by the daemon) |
 | `conflicts.prepare` | Start a resolution session (temp worktree) |
 | `conflicts.file` | One conflicted file's segments, from the worktree |
 | `conflicts.save` | Write resolved content, or pick a whole-file side |
@@ -369,16 +385,19 @@ Measured on macOS with release builds:
 | Process | Footprint |
 |---|---|
 | `gitsurveild` (daemon), idle | ~3–9 MB |
-| `gitsurveil`, popover closed | ~24 MB |
+| `gitsurveil`, popover dismissed (warm) | ~24 MB |
 | `gitsurveil`, popover open | ~25 MB |
 
 These are `phys_footprint` — the private memory macOS attributes to the
 process, and what Activity Monitor shows. Raw RSS reads far higher (~84 MB)
 because it counts shared system framework pages that every app maps.
 
-Closing the popover destroys its webview process outright (verified: the
-WebKit content process disappears), and repeated open/close cycles hold steady
-rather than creeping upward.
+Dismissing the popover hides its webview (so the next tray click is instant);
+leaving it hidden past the idle timeout destroys it outright (the WebKit
+content process disappears), and repeated open/dismiss cycles hold steady
+rather than creeping upward. Figures above were measured with the destroy-on-
+close behavior; with the hidden webview the "popover closed" row reflects a
+recently-dismissed, still-warm popover until the idle teardown reclaims it.
 
 Specifications live in `/specs` — one document per feature, and the source of
 truth for behavior. Read the relevant spec before changing a feature.
