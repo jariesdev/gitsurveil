@@ -16,7 +16,10 @@ talks to GitHub directly with your own token, and no data goes anywhere else.
 prioritizes what it finds, and notifies you; a menubar app shows what's
 pending; a desktop window provides the dashboard, history, rules, accounts,
 pull-request management, and a three-pane conflict resolver that lets you merge
-a conflicted PR from within the app.
+a conflicted PR from within the app. A **Repositories** pane discovers every
+repository across your accounts, flags the ones you haven't seen yet, and can
+clone any of them in the background — the local copies the conflict resolver
+works on.
 
 | Phase | Feature | Status |
 |---|---|---|
@@ -136,6 +139,10 @@ pnpm install
 # dev server, so its popover comes up blank.
 pnpm tauri build --config crates/gitsurveil-app/tauri.conf.json --no-bundle
 
+# Linux: the daemon's git2 HTTPS transport needs OpenSSL headers
+# (macOS uses the system SecureTransport; Windows uses WinHTTP).
+sudo apt install libssl-dev   # Debian/Ubuntu, if not already installed
+
 cargo build --release -p gitsurveild
 ```
 
@@ -161,6 +168,18 @@ cargo run -p gitsurveild -- --foreground
 
 It stays attached to the terminal and logs what it's doing. Leave it running.
 (Login-time autostart is Phase 9; until then this is the only way to run it.)
+
+### 1b. Stop the daemon
+
+Foreground mode stops with `Ctrl+C` (or by closing the terminal). If the
+daemon was installed as a login service instead (`gitsurveild install`), stop
+it with:
+
+```bash
+launchctl bootout gui/$(id -u)/io.gitsurveil.daemon
+```
+
+or remove the registration entirely with `gitsurveild uninstall`.
 
 ### 2. Add your GitHub account
 
@@ -216,9 +235,15 @@ opens the full window:
 - **History** — resolved and dismissed items, with the option to restore a
   dismissal.
 - **Rules** — how scoring works, and what your configured rules do.
-- **Repositories** — local clone paths the conflict resolver uses. Resolution
-  always happens on a throwaway worktree cloned from this path, never in your
-  working tree.
+- **Repositories** — every repository discovered across your accounts, with
+  account and organization filters. Repos the daemon has found but you haven't
+  seen yet are flagged in a "new repositories" modal when the window opens
+  (one dismissal acks the whole batch). Right-click any row to open it on
+  GitHub,   clone it locally into a folder you pick (a background job with a
+  progress bar), or point it at an existing clone. Tracked repos are what the
+  conflict resolver works on — always on a throwaway worktree, never in your
+  working tree. Clones are HTTPS-only and are never pushed to without an
+  explicit action.
 - **Accounts** — add or remove accounts.
 
 Clicking a pull request opens a detail pane beside the list: description,
@@ -280,7 +305,14 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `pr.resolve` | Resolve or unresolve a review thread |
 | `pr.branches` / `pr.labels` | Branch names and repo labels, for the create/edit pickers |
 | `prs.list` | Live list of PRs across accounts (standing state for the Pull Requests view); optional account filter and open/closed/merged state |
-| `repos.list` / `repos.set` / `repos.remove` | Local clone paths for the conflict resolver |
+| `repos.list` | The full repository catalog (every discovered repo + organizations), with tracked state and clone path |
+| `repos.new` | Repositories discovered but not yet acknowledged |
+| `repos.ack_new` | Dismiss the whole "new repositories" batch |
+| `repos.refresh` | Force a discovery pass right now |
+| `repos.clone` | Start a background HTTPS clone; returns a `job_id` |
+| `repos.clone_status` | Progress of a clone job (bytes received; the total is unknowable, so it stays 0) |
+| `repos.set` | Register an existing local clone as a repo's path (validated) |
+| `repos.remove` | Forget a repo's clone path (does not delete files) |
 | `conflicts.prepare` | Start a resolution session (temp worktree) |
 | `conflicts.file` | One conflicted file's segments, from the worktree |
 | `conflicts.save` | Write resolved content, or pick a whole-file side |
