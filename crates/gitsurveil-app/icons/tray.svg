@@ -1,0 +1,19 @@
+<!--
+  Tray icon: the branch from the app icon, without the soil or the card.
+
+  A menu bar renders this around 22pt. The ground and the background would
+  turn to mud at that size, so the tray keeps only the part that carries the
+  identity — the forking branch with a node at every tip.
+
+  __COLOR__ is substituted per severity by scripts/render-icons.sh.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <g fill="none" stroke="__COLOR__" stroke-width="46" stroke-linecap="round">
+    <path d="M 256 458 L 256 176"/>
+    <path d="M 256 330 C 256 244 196 214 132 214"/>
+    <path d="M 256 254 C 256 168 316 138 380 138"/>
+  </g>
+  <circle cx="132" cy="214" r="52" fill="__COLOR__"/>
+  <circle cx="380" cy="138" r="52" fill="__COLOR__"/>
+  <circle cx="256" cy="152" r="58" fill="__COLOR__"/>
+</svg>

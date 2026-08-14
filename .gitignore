@@ -5,3 +5,7 @@ node_modules
 # Tauri's generated schemas/capabilities output
 crates/gitsurveil-app/gen
 /crates/gitsurveil-app/binaries
+
+# `tauri icon` also emits mobile asset sets; this project is desktop-only.
+/crates/gitsurveil-app/icons/android
+/crates/gitsurveil-app/icons/ios

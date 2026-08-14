@@ -1,0 +1,52 @@
+<!--
+  gitsurveil app icon: a git branch growing out of the soil like a tree.
+
+  The commit graph is the tree — one trunk rising from the ground, branches
+  forking off it, a commit node at every tip. Source of truth for the raster
+  icons; regenerate them with scripts/render-icons.sh.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b3440"/>
+      <stop offset="1" stop-color="#151a21"/>
+    </linearGradient>
+    <linearGradient id="soil" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b5854f"/>
+      <stop offset="1" stop-color="#7d5a35"/>
+    </linearGradient>
+    <!-- The ground has to respect the icon's rounded corners, so it is cut by
+         the same shape that draws the background. -->
+    <clipPath id="card">
+      <rect x="72" y="72" width="880" height="880" rx="200"/>
+    </clipPath>
+  </defs>
+
+  <rect x="72" y="72" width="880" height="880" rx="200" fill="url(#bg)"/>
+
+  <!-- Scaled about the point where the trunk meets the soil, so the tree
+       grows without lifting out of the ground. -->
+  <g transform="translate(512 792) scale(1.16) translate(-512 -792)">
+  <g fill="none" stroke="#e8edf2" stroke-width="54" stroke-linecap="round">
+    <!-- Trunk. Starts below the soil line so no seam shows where it enters. -->
+    <path d="M 512 852 L 512 386"/>
+    <!-- Branches forking off it, with the easy curve of a commit graph rather
+         than the angularity of a real tree. -->
+    <path d="M 512 640 C 512 520 424 480 336 480"/>
+    <path d="M 512 540 C 512 420 600 380 688 380"/>
+  </g>
+
+  <!-- A commit node at every tip. The newest, topping the trunk, is accented
+       so it reads first. -->
+  <circle cx="336" cy="480" r="62" fill="#e8edf2"/>
+  <circle cx="688" cy="380" r="62" fill="#e8edf2"/>
+  <circle cx="512" cy="352" r="72" fill="#4c9aff"/>
+  </g>
+
+  <!-- Soil last, so it overlaps the base of the trunk: the tree disappears
+       into the ground instead of resting a rounded cap on top of it. -->
+  <g clip-path="url(#card)">
+    <path d="M 72 830 Q 300 778 512 792 Q 724 806 952 768 L 952 952 L 72 952 Z"
+          fill="url(#soil)"/>
+  </g>
+</svg>
