@@ -1,4 +1,4 @@
-# gitsurveil
+# GitSurveil
 
 A GitHub action-item monitor that runs quietly in the background and tells you
 only what actually needs your attention.
@@ -82,7 +82,7 @@ gitsurveild (Rust daemon) ── polls GitHub, owns all state,
                              sends notifications, serves a local
                              JSON API over a unix socket
         ▲
-gitsurveil (Tauri v2 app) ── tray icon + notifications popover,
+GitSurveil (Tauri v2 app) ── tray icon + notifications popover,
                              plus the full desktop window
 ```
 
@@ -110,8 +110,8 @@ These builds are not code-signed, so the first launch is blocked:
 The background service ships inside the app. To have it start at login:
 
 ```bash
-# macOS, after dragging gitsurveil.app to /Applications
-/Applications/gitsurveil.app/Contents/MacOS/gitsurveild install
+# macOS, after dragging GitSurveil.app to /Applications
+/Applications/GitSurveil.app/Contents/MacOS/gitsurveild install
 ```
 
 `gitsurveild status` reports whether it is registered and whether it is
@@ -212,7 +212,7 @@ you. Click it for the popover: everything currently open, most urgent first,
 with a dot per priority band. Click a row to open it on GitHub. Clicking
 elsewhere dismisses the popover.
 
-**Open gitsurveil** — from the popover header or the tray's right-click menu —
+**Open GitSurveil** — from the popover header or the tray's right-click menu —
 opens the full window:
 
 - **Dashboard** — items grouped by priority (or by type), with search and
@@ -374,7 +374,7 @@ Two current limitations, both temporary:
 ## A note on sleep
 
 Closing your laptop lid sleeps the OS, and no background process runs during
-sleep — that's true of any app, and gitsurveil doesn't fight it with wake locks.
+sleep — that's true of any app, and GitSurveil doesn't fight it with wake locks.
 What the daemon does give you: monitoring with no UI open, an immediate catch-up
 poll on wake, and continuous monitoring on machines that stay awake (desktops,
 clamshell mode on power).

@@ -164,7 +164,7 @@ export function Popover() {
       <Shell>
         <div className="p-4 text-center">
           <p className="text-[13px] font-medium text-neutral-900 dark:text-neutral-100">
-            The gitsurveil service isn’t running
+            The GitSurveil service isn’t running
           </p>
           <p className="mt-1 text-[11px] text-neutral-500">
             Start it with{" "}
@@ -201,7 +201,7 @@ export function Popover() {
         >
           {status.account_count === 0
             ? "Set up an account"
-            : "Open gitsurveil"}
+            : "Open GitSurveil"}
         </button>
       </header>
 

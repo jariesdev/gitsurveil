@@ -132,7 +132,7 @@ fn main() {
 /// `tauri.conf.json` as well produces a second, inert icon in the menu bar,
 /// since the config-declared icon carries none of the handlers below.
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let open_full_ui = MenuItem::with_id(app, "open_full_ui", "Open gitsurveil", true, None::<&str>)?;
+    let open_full_ui = MenuItem::with_id(app, "open_full_ui", "Open GitSurveil", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open_full_ui, &quit])?;
 
@@ -184,7 +184,7 @@ fn open_main(app: &tauri::AppHandle) -> tauri::Result<()> {
     // `#main` routes the shared bundle to the desktop UI; the popover loads
     // the same index.html with no fragment.
     let window = WebviewWindowBuilder::new(app, MAIN_LABEL, WebviewUrl::App("index.html#main".into()))
-        .title("gitsurveil")
+        .title("GitSurveil")
         .inner_size(MAIN_WIDTH, MAIN_HEIGHT)
         .min_inner_size(760.0, 520.0)
         .resizable(true)

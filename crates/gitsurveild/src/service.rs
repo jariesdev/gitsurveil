@@ -210,7 +210,7 @@ mod platform {
 
         let unit = format!(
             "[Unit]\n\
-             Description=gitsurveil GitHub action-item monitor\n\
+             Description=GitSurveil GitHub action-item monitor\n\
              After=network-online.target\n\
              \n\
              [Service]\n\

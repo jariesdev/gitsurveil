@@ -70,7 +70,7 @@ export function Rules({ rules }: { rules: Rule[] }) {
       )}
 
       <p className="mt-6 text-[11px] text-neutral-500">
-        Rules live in <code>config.toml</code> in the gitsurveil data directory.
+        Rules live in <code>config.toml</code> in the GitSurveil data directory.
         A graphical editor is coming; edits to the file take effect on restart.
       </p>
     </div>

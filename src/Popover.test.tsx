@@ -69,7 +69,7 @@ describe("Popover", () => {
     expect(screen.getByText("acme/api#482")).toBeInTheDocument();
     expect(screen.getByText("1 item")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Open gitsurveil" }),
+      screen.getByRole("button", { name: "Open GitSurveil" }),
     ).toBeInTheDocument();
   });
 
@@ -95,7 +95,7 @@ describe("Popover", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText("The gitsurveil service isn’t running"),
+        screen.getByText("The GitSurveil service isn’t running"),
       ).toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
@@ -135,7 +135,7 @@ describe("Popover", () => {
     render(<Popover />);
 
     await screen.findByText("First");
-    // Scoped to the list, so the header's "Open gitsurveil" button doesn't
+    // Scoped to the list, so the header's "Open GitSurveil" button doesn't
     // count as the first row.
     const rows = screen.getAllByRole("listitem").map((li) => li.textContent);
     expect(rows[0]).toContain("First");

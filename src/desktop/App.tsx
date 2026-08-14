@@ -115,7 +115,7 @@ export function App() {
       <Shell>
         <div className="flex h-full flex-col items-center justify-center gap-3 p-10 text-center">
           <p className="text-sm font-medium">
-            The gitsurveil service isn’t running
+            The GitSurveil service isn’t running
           </p>
           <p className="max-w-md text-xs text-neutral-500">
             Start it with{" "}
