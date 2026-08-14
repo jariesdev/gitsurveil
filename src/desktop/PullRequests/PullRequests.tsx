@@ -324,14 +324,14 @@ export function PullRequests({
                         title={`${pr.unresolved_threads} unresolved review thread${pr.unresolved_threads === 1 ? "" : "s"}`}
                       >
                         <ChatBubbleIcon className="h-4 w-4 text-neutral-500 dark:text-neutral-400" />
-                        <span className="absolute -right-1.5 -top-1.5 min-w-3.5 rounded-full bg-amber-400 px-0.5 text-center text-[9px] font-semibold leading-3.5 tabular-nums text-amber-950">
+                        <span className="absolute -right-1.5 -top-1.5 min-w-4 rounded-full bg-amber-400 px-0.5 text-center text-[10px] font-semibold leading-4 tabular-nums text-amber-950">
                           {pr.unresolved_threads}
                         </span>
                       </span>
                     )}
 
                     <span
-                      className="shrink-0 tabular-nums text-[11px] text-neutral-400"
+                      className="shrink-0 tabular-nums text-[11px] text-neutral-500 dark:text-neutral-400"
                       title={`Updated ${pr.updated_at}`}
                     >
                       {age(pr.updated_at)}

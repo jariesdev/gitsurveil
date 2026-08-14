@@ -683,7 +683,7 @@ function WorktreesSection({
           <span className="shrink-0 text-xs font-medium">{worktree.branch}</span>
           <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-500">{worktree.path}</span>
           {worktree.head && (
-            <span className="shrink-0 font-mono text-[10px] text-neutral-400">{worktree.head}</span>
+            <span className="shrink-0 font-mono text-[11px] text-neutral-400">{worktree.head}</span>
           )}
         </div>
       ))}
@@ -729,7 +729,7 @@ function WorktreesSection({
           Add
         </button>
       </form>
-      <p className="mt-1 text-[10px] text-neutral-400">
+      <p className="mt-1 text-[11px] text-neutral-400">
         Relative paths resolve next to the clone ({repo.clone_path ? parentDir(repo.clone_path) : "…"}).
         Deleting a worktree keeps its branch.
       </p>
@@ -751,7 +751,7 @@ function CloneProgress({ received }: { received: number }) {  return (
       <div className="h-1 w-full overflow-hidden rounded bg-neutral-200 dark:bg-neutral-700">
         <div className="h-full w-1/2 animate-pulse rounded bg-neutral-500" />
       </div>
-      <span className="text-right text-[10px] tabular-nums text-neutral-400">
+      <span className="text-right text-[11px] tabular-nums text-neutral-400">
         {formatBytes(received)}
       </span>
     </div>

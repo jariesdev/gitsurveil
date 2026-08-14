@@ -516,7 +516,7 @@ function ThreePane({
               onInput={onEdit}
               spellCheck={false}
               aria-label="Resolution"
-              className="min-h-0 flex-1 resize-none overflow-auto bg-transparent p-3 font-mono text-xs leading-relaxed outline-none"
+              className="min-h-0 flex-1 resize-none overflow-auto bg-transparent p-3 font-mono text-xs leading-relaxed"
             />
           </section>
         </div>

@@ -77,7 +77,7 @@ export function ItemRow({
       </button>
 
       <span
-        className="shrink-0 tabular-nums text-[11px] text-neutral-400"
+        className="shrink-0 tabular-nums text-[11px] text-neutral-500 dark:text-neutral-400"
         title={`Priority score ${item.score}`}
       >
         {age(item.updated_at)}

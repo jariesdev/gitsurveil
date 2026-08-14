@@ -726,7 +726,7 @@ function Section({
 
 function Badge({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] dark:bg-neutral-800">
+    <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[11px] dark:bg-neutral-800">
       {children}
     </span>
   );
