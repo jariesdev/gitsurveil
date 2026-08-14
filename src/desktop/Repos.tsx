@@ -258,7 +258,7 @@ export function Repos({
     <div className="flex h-full flex-col">
       <header className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
         <div className="min-w-0 flex-1">
-          <h2 className="text-base font-semibold">Repositories</h2>
+          <h2 className="text-base font-semibold">Repository and Worktrees</h2>
           <p className="truncate text-[11px] text-neutral-500">
             Repositories across your accounts. Clones and conflict resolution
             run on local copies; nothing is pushed without an explicit action.
@@ -486,13 +486,19 @@ function RepoRow({
 
   return (
     <li className="border-b border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50">
-      <div className="flex items-center gap-3 px-4 py-2">
+      <div
+        className="flex cursor-pointer items-center gap-3 px-4 py-2"
+        onClick={() => void openUrl(repo.url)}
+      >
         {expandable && (
           <button
             type="button"
             aria-expanded={expanded}
             aria-label={`Worktrees for ${repo.full_name}`}
-            onClick={onToggle}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggle();
+            }}
             className={`shrink-0 text-xs text-neutral-500 transition-transform ${
               expanded ? "rotate-90" : ""
             }`}
@@ -501,9 +507,7 @@ function RepoRow({
           </button>
         )}
 
-        <button
-          type="button"
-          onClick={() => void openUrl(repo.url)}
+        <div
           className="min-w-0 flex-1 text-left"
           title={repo.description ?? repo.full_name}
         >
@@ -527,14 +531,17 @@ function RepoRow({
                 ? `Clone failed: ${job?.status?.error ?? "unknown error"}`
                 : "No local clone"}
           </div>
-        </button>
+        </div>
 
         {running && <CloneProgress received={job?.status?.received ?? 0} />}
 
         <button
           type="button"
           aria-label={`Actions for ${repo.full_name}`}
-          onClick={onMenu}
+          onClick={(event) => {
+            event.stopPropagation();
+            onMenu(event);
+          }}
           className="shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-xs dark:border-neutral-700"
         >
           ⋯

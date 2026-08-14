@@ -10,6 +10,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import { appsAdd, appsList, appsRemove } from "../ipc";
 import type { RegisteredApp } from "../types";
 
@@ -19,6 +20,16 @@ export function Settings() {
   const [command, setCommand] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /** Browses for an executable and fills the command field with its path. */
+  const pickExecutable = useCallback(async () => {
+    const picked = await pickFile({
+      directory: false,
+      multiple: false,
+      title: "Choose an executable",
+    });
+    if (typeof picked === "string") setCommand(picked);
+  }, []);
 
   const reload = useCallback(async () => {
     try {
@@ -118,14 +129,27 @@ export function Settings() {
           />
         </Field>
 
-        <Field label="Command">
-          <input
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            placeholder="e.g. code"
-            className="w-full rounded border border-neutral-200 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-          />
-        </Field>
+        <div>
+          <span className="mb-1 block text-xs text-neutral-600 dark:text-neutral-400">
+            Application or Command
+          </span>
+          <div className="flex gap-2">
+            <input
+              aria-label="Application or Command"
+              value={command}
+              onChange={(e) => setCommand(e.target.value)}
+              placeholder="e.g. code"
+              className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            />
+            <button
+              type="button"
+              onClick={() => void pickExecutable()}
+              className="shrink-0 rounded border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700"
+            >
+              Browse…
+            </button>
+          </div>
+        </div>
         <p className="mt-1 text-[11px] text-neutral-500">
           An executable name on your PATH (e.g.{" "}
           <code className="rounded bg-neutral-200 px-1 py-0.5 dark:bg-neutral-800">

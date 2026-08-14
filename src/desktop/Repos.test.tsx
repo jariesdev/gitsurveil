@@ -9,6 +9,7 @@ import { Repos } from "./Repos";
 import {
   appsList,
   appsOpen,
+  openUrl,
   reposClone,
   reposCloneStatus,
   reposSet,
@@ -91,6 +92,13 @@ describe("Repos", () => {
     );
     expect(screen.getByText("acme/api")).toBeTruthy();
     expect(screen.getByText("acme/web")).toBeTruthy();
+  });
+
+  it("opens a repo in the browser on a single click of the row", () => {
+    render(<Repos catalog={catalog} accounts={[account]} onChange={() => {}} />);
+    // The whole row is the affordance, not a narrow text button.
+    fireEvent.click(screen.getByText("acme/api"));
+    expect(openUrl).toHaveBeenCalledWith("https://github.com/acme/api");
   });
 
   it("lets an untracked repo map an existing local clone read-only", async () => {

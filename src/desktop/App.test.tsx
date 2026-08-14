@@ -119,7 +119,9 @@ describe("App navigation", () => {
 
     expect(await screen.findByText("ariesragingriverict/paypal")).toBeTruthy();
     expect(screen.getByText("wthvillas/villasplatform")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Repositories" })).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Repository and Worktrees" }),
+    ).toBeTruthy();
   });
 
   it("renders the Settings view when its nav item is clicked", async () => {

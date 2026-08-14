@@ -8,6 +8,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appsAdd, appsList, appsRemove } from "../ipc";
 import { Settings } from "./Settings";
 
+const dialog = vi.hoisted(() => ({ open: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: dialog.open }));
+
 vi.mock("../ipc", () => ({
   appsAdd: vi.fn(),
   appsList: vi.fn(),
@@ -46,7 +49,7 @@ describe("Settings", () => {
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "VS Code" },
     });
-    fireEvent.change(screen.getByLabelText("Command"), {
+    fireEvent.change(screen.getByLabelText("Application or Command"), {
       target: { value: "code" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Add application" }));
@@ -55,6 +58,19 @@ describe("Settings", () => {
     // The reload brings the new row in; the empty state is gone.
     expect(await screen.findByText("VS Code")).toBeTruthy();
     expect(screen.queryByText(/No applications yet/)).toBeNull();
+  });
+
+  it("fills the command field from the executable file picker", async () => {
+    vi.mocked(appsList).mockResolvedValue([]);
+    dialog.open.mockResolvedValueOnce("/usr/local/bin/code");
+    render(<Settings />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText("Application or Command") as HTMLInputElement).value,
+      ).toBe("/usr/local/bin/code"),
+    );
   });
 
   it("removes an application", async () => {
@@ -76,7 +92,7 @@ describe("Settings", () => {
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "VS Code" },
     });
-    fireEvent.change(screen.getByLabelText("Command"), {
+    fireEvent.change(screen.getByLabelText("Application or Command"), {
       target: { value: "code" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Add application" }));
