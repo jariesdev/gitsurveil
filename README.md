@@ -234,23 +234,25 @@ opens the full window:
 - **History** — resolved and dismissed items, with the option to restore a
   dismissal.
 - **Rules** — how scoring works, and what your configured rules do.
-- **Repositories** — every repository discovered across your accounts, with
-  account and organization filters. Repos the daemon has found but you haven't
-  seen yet are flagged in a "new repositories" modal when the window opens
-  (one dismissal acks the whole batch). Right-click any row to open it on
-  GitHub,   clone it locally into a folder you pick (a background job with a
-  progress bar), or point it at an existing clone. Tracked repos are what the
-  conflict resolver works on — always on a throwaway worktree, never in your
-  working tree. Clones are HTTPS-only and are never pushed to without an
-  explicit action. Rows with a registered clone expand to show the repo's
-  **  worktrees** (and to add or delete them): pick an existing branch or type a
-  new one, and the daemon creates `wt-{owner}-{name}-{branch}` next to the
-  clone. Right-click a worktree to **Open with…** a registered app (the daemon
-  runs `command <path>`) or to delete it — deleting removes its directory but
-  keeps its branch.
+- **Repository and Worktrees** — every repository discovered across your
+  accounts, with account and organization filters. A single click on a row
+  opens the repo in your browser; the chevron expands the worktree panel. Repos
+  the daemon has found but you haven't seen yet are flagged in a "new
+  repositories" modal when the window opens (one dismissal acks the whole
+  batch). Right-click any row to open it on GitHub, clone it locally into a
+  folder you pick (a background job with a progress bar), or point it at an
+  existing clone. Tracked repos are what the conflict resolver works on —
+  always on a throwaway worktree, never in your working tree. Clones are
+  HTTPS-only and are never pushed to without an explicit action. Rows with a
+  registered clone expand to show the repo's worktrees (and to add or delete
+  them): pick an existing branch or type a new one, and the daemon creates
+  `wt-{owner}-{name}-{branch}` next to the clone. Right-click a worktree to
+  **Open with…** a registered app (the daemon runs `command <path>`) or to
+  delete it — deleting removes its directory but keeps its branch.
 - **Settings** — the **Open with… applications** for worktree menus: give each
-  a name and the bare executable on your PATH (`code`, `phpstorm`, …). You only
-  get an "Open with…" menu when at least one app is registered.
+  a name and an **Application or Command** (an executable on your PATH, an
+  absolute path, or one picked with the **Browse…** file dialog). You only get
+  an "Open with…" menu when at least one app is registered.
 - **Accounts** — add or remove accounts.
 
 Clicking a pull request opens a detail pane beside the list: description,
