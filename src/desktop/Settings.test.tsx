@@ -28,9 +28,11 @@ describe("Settings", () => {
     ]);
     render(<Settings />);
     expect(await screen.findByText("VS Code")).toBeTruthy();
-    expect(screen.getByText("code")).toBeTruthy();
+    // The command is matched on the row's `.font-mono` cell, not the inline
+    // `<code>code</code>` example in the hint paragraph.
+    expect(screen.getByText("code", { selector: ".font-mono" })).toBeTruthy();
     expect(screen.getByText("Sublime Merge")).toBeTruthy();
-    expect(screen.getByText("smerge")).toBeTruthy();
+    expect(screen.getByText("smerge", { selector: ".font-mono" })).toBeTruthy();
   });
 
   it("adds an application and reloads the list", async () => {

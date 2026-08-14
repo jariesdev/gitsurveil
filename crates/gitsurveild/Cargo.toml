@@ -26,7 +26,9 @@ chrono = { version = "0.4.45", features = ["serde"] }
 uuid = { version = "1.24.0", features = ["v4"] }
 notify-rust = "4.18.0"
 # `https` is not a default feature in git2 0.21 — without it libgit2 has no TLS
-# backend and HTTPS clones fail with "there is no TLS stream available". On
-# macOS it uses SecureTransport; on Windows WinHTTP; only on Linux does it
-# require system OpenSSL headers (libssl-dev).
-git2 = { version = "0.21.0", features = ["https"] }
+# backend and HTTPS clones fail with "there is no TLS stream available".
+# `vendored-openssl` builds OpenSSL from source, so the daemon needs no system
+# OpenSSL headers on any target and cross-compiles cleanly (the release matrix
+# cross-builds the daemon for x86_64-apple-darwin from an arm64 runner, where a
+# system openssl-sys sysroot isn't available).
+git2 = { version = "0.21.0", features = ["https", "vendored-openssl"] }
