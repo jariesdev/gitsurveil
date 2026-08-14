@@ -395,9 +395,11 @@ mod tests {
         let target = clone.parent().unwrap().join("wt-acme-api-feature");
         let info = add(&clone, "feature", target.to_str().unwrap()).unwrap();
         assert_eq!(info.branch, "feature");
-        // `/var` is a symlink to `/private/var` on macOS; canonicalize both.
-        let expected = std::fs::canonicalize(&target).unwrap().to_string_lossy().into_owned();
-        assert_eq!(info.path, expected);
+        // Canonicalize both sides: `/var` is a symlink to `/private/var` on
+        // macOS, and on Windows `canonicalize` returns the `\\?\` verbatim
+        // form the daemon's cleaner path won't literally match.
+        let expected = std::fs::canonicalize(&target).unwrap();
+        assert_eq!(std::fs::canonicalize(&info.path).unwrap(), expected);
         assert!(!info.head.is_empty());
         let repo = Repository::open(&clone).unwrap();
         assert!(
@@ -441,11 +443,8 @@ mod tests {
     fn add_resolves_relative_paths_against_the_clone_parent() {
         let clone = fixture();
         let info = add(&clone, "feature", "wt-relative").unwrap();
-        let expected = std::fs::canonicalize(clone.parent().unwrap().join("wt-relative"))
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        assert_eq!(info.path, expected);
+        let expected = std::fs::canonicalize(clone.parent().unwrap().join("wt-relative")).unwrap();
+        assert_eq!(std::fs::canonicalize(&info.path).unwrap(), expected);
         cleanup(&clone);
     }
 

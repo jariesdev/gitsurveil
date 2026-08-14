@@ -602,6 +602,11 @@ fn spawn_app(command: &str, path: &str) -> Result<()> {
     };
     #[cfg(windows)]
     {
+        // On Windows the command goes through `cmd /C` so a `.cmd`/`.bat` shim
+        // (like npm-installed `code`) resolves the way it would in a terminal.
+        // A missing command is therefore reported as a non-zero `cmd` exit, not
+        // a spawn error — so `spawn` still succeeds (see the platform-gated
+        // assertion in `apps_open_rejects_unregistered_and_unknown_binary`).
         std::process::Command::new("cmd")
             .args(["/C", command, path])
             .spawn()
@@ -2135,8 +2140,21 @@ mod tests {
             },
         )
         .await;
-        let err = missing.error.unwrap();
-        assert_eq!(err.code, "config_error");
-        assert!(err.message.contains("is it installed and on PATH?"));
+        // `cmd /C` on Windows can't distinguish a missing command from a real
+        // one at spawn time (both spawn fine; cmd reports it via its exit code),
+        // so the config_error only surfaces on POSIX, where `Command::new`
+        // returns `NotFound` for an executable that isn't on PATH.
+        #[cfg(not(windows))]
+        {
+            let err = missing.error.unwrap();
+            assert_eq!(err.code, "config_error");
+            assert!(err.message.contains("is it installed and on PATH?"));
+        }
+        #[cfg(windows)]
+        {
+            // The command is registered and spawned; only the exit code could
+            // reveal it's missing, and we don't wait on the detached child.
+            assert!(missing.error.is_none(), "cmd /C spawns successfully");
+        }
     }
 }
