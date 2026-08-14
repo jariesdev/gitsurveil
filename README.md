@@ -140,10 +140,8 @@ pnpm install
 # dev server, so its popover comes up blank.
 pnpm tauri build --config crates/gitsurveil-app/tauri.conf.json --no-bundle
 
-# Linux: the daemon's git2 HTTPS transport needs OpenSSL headers
-# (macOS uses the system SecureTransport; Windows uses WinHTTP).
-sudo apt install libssl-dev   # Debian/Ubuntu, if not already installed
-
+# The daemon builds OpenSSL from source (git2's vendored-openssl feature), so
+# no system OpenSSL headers are needed on any platform.
 cargo build --release -p gitsurveild
 ```
 
