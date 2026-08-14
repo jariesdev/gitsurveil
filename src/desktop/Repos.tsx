@@ -488,7 +488,11 @@ function RepoRow({
     <li className="border-b border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50">
       <div
         className="flex cursor-pointer items-center gap-3 px-4 py-2"
-        onClick={() => void openUrl(repo.url)}
+        // Single click toggles the worktree panel; double click opens the repo
+        // in the browser. (A double click also fires two single clicks, which
+        // toggle twice and land back where they started — harmless.)
+        onClick={onToggle}
+        onDoubleClick={() => void openUrl(repo.url)}
       >
         {expandable && (
           <button

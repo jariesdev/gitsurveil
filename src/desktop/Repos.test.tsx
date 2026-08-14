@@ -41,6 +41,12 @@ vi.mock("../ipc", () => ({
 const dialog = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: dialog.open }));
 
+// Clear call histories (not implementations) so a lazy-load assertion like
+// `reposWorktrees not called` isn't polluted by an earlier test's expand.
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
 function repository(overrides: Partial<Repository> = {}): Repository {
   return {
     account_id: "acc-1",
@@ -94,10 +100,18 @@ describe("Repos", () => {
     expect(screen.getByText("acme/web")).toBeTruthy();
   });
 
-  it("opens a repo in the browser on a single click of the row", () => {
+  it("toggles worktrees on a single click of an expandable row", async () => {
+    vi.mocked(reposWorktrees).mockResolvedValue({ worktrees: [], branches: ["main"] });
     render(<Repos catalog={catalog} accounts={[account]} onChange={() => {}} />);
-    // The whole row is the affordance, not a narrow text button.
-    fireEvent.click(screen.getByText("acme/api"));
+    expect(reposWorktrees).not.toHaveBeenCalled();
+    // acme/web is tracked with a clone path, so a single click expands it.
+    fireEvent.click(screen.getByText("acme/web"));
+    await waitFor(() => expect(reposWorktrees).toHaveBeenCalledWith("acme/web"));
+  });
+
+  it("opens a repo in the browser on a double click of the row", () => {
+    render(<Repos catalog={catalog} accounts={[account]} onChange={() => {}} />);
+    fireEvent.doubleClick(screen.getByText("acme/api"));
     expect(openUrl).toHaveBeenCalledWith("https://github.com/acme/api");
   });
 
