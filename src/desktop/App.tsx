@@ -12,14 +12,17 @@ import {
   listAccounts,
   listHistory,
   listItems,
-  listRepos,
   listRules,
   openUrl,
+  reposAckNew,
+  reposList,
+  reposNew,
   undismissItem,
 } from "../ipc";
 import type {
   AccountRef,
-  RepoConfig,
+  RepoCatalog,
+  Repository,
   Rule,
   ScoredItem,
   StatusResult,
@@ -27,9 +30,11 @@ import type {
 import { Accounts } from "./Accounts";
 import { Dashboard } from "./Dashboard";
 import { ItemRow } from "./ItemRow";
+import { NewReposModal } from "./NewReposModal";
 import { PullRequests } from "./PullRequests/PullRequests";
 import { Repos } from "./Repos";
 import { Rules } from "./Rules";
+import { ViewErrorBoundary } from "./ErrorBoundary";
 
 type View = "dashboard" | "pull-requests" | "history" | "rules" | "repos" | "accounts";
 
@@ -47,7 +52,7 @@ interface Data {
   history: ScoredItem[];
   accounts: AccountRef[];
   rules: Rule[];
-  repos: RepoConfig[];
+  repos: RepoCatalog;
   status: StatusResult;
 }
 
@@ -55,6 +60,8 @@ export function App() {
   const [view, setView] = useState<View>("dashboard");
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Repos discovered but not yet acknowledged; non-empty opens the modal. */
+  const [newRepos, setNewRepos] = useState<Repository[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -66,7 +73,7 @@ export function App() {
         listHistory(200),
         listAccounts(),
         listRules(),
-        listRepos(),
+        reposList(),
         daemonStatus(),
       ]);
       setData({ items, history, accounts, rules, repos, status });
@@ -77,6 +84,27 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    void load();
+  }, [load]);
+
+  // The new-repositories modal is a main-window-open event, not a per-refresh
+  // one: fetched once on mount so the modal doesn't keep popping back up over
+  // a session the user has chosen to dismiss.
+  useEffect(() => {
+    reposNew()
+      .then(setNewRepos)
+      .catch(() => setNewRepos([]));
+  }, []);
+
+  /** The modal's only exit: dismiss the whole batch and reload. */
+  const handleAckNew = useCallback(async () => {
+    try {
+      await reposAckNew(new Date().toISOString());
+    } catch {
+      // A failure just closes the modal; the repos stay "new" and the modal
+      // returns next time the window opens.
+    }
+    setNewRepos([]);
     void load();
   }, [load]);
 
@@ -116,6 +144,9 @@ export function App() {
 
   return (
     <Shell>
+      {newRepos.length > 0 && (
+        <NewReposModal repos={newRepos} onClose={() => void handleAckNew()} />
+      )}
       <div className="flex h-full">
         <nav
           aria-label="Sections"
@@ -152,7 +183,9 @@ export function App() {
         </nav>
 
         <main className="min-w-0 flex-1 overflow-hidden">
-          {view === "dashboard" && (
+          {/* Keyed by view so switching away from a crashed pane resets it. */}
+          <ViewErrorBoundary key={view} onReset={() => setView("dashboard")}>
+            {view === "dashboard" && (
             <Dashboard
               items={data.items}
               accounts={data.accounts}
@@ -170,11 +203,16 @@ export function App() {
           )}
           {view === "rules" && <Rules rules={data.rules} />}
           {view === "repos" && (
-            <Repos repos={data.repos} onChange={() => void load()} />
+            <Repos
+              catalog={data.repos}
+              accounts={data.accounts}
+              onChange={() => void load()}
+            />
           )}
           {view === "accounts" && (
             <Accounts accounts={data.accounts} onChange={() => void load()} />
           )}
+          </ViewErrorBoundary>
         </main>
       </div>
     </Shell>

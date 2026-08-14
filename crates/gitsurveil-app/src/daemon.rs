@@ -8,7 +8,9 @@
 
 use std::path::PathBuf;
 
-use gitsurveil_proto::{AccountRef, Request, Response, ScoredItem, StatusResult};
+use gitsurveil_proto::{
+    AccountRef, CloneStatus, RepoCatalog, Repository, Request, Response, ScoredItem, StatusResult,
+};
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -173,19 +175,50 @@ pub async fn list_rules() -> Result<serde_json::Value> {
     call("rules.list", serde_json::Value::Null).await
 }
 
-/// Lists configured local clone paths (`specs/conflict-resolver.md`).
-pub async fn repos_list() -> Result<serde_json::Value> {
+/// Lists the repository catalog: every discovered repo with its tracked/clone
+/// state, plus the orgs each account can filter by (`specs/desktop-ui.md`).
+pub async fn repos_list() -> Result<RepoCatalog> {
     call("repos.list", serde_json::Value::Null).await
 }
 
 /// Registers a local clone path for one repo (validated by the daemon).
-pub async fn repos_set(repo: &str, path: &str) -> Result<serde_json::Value> {
+/// Marks the repo tracked and acks it as seen.
+pub async fn repos_set(repo: &str, path: &str) -> Result<Repository> {
     call("repos.set", serde_json::json!({ "repo": repo, "path": path })).await
 }
 
-/// Removes a repo's local clone path; idempotent.
-pub async fn repos_remove(repo: &str) -> Result<serde_json::Value> {
-    call("repos.remove", serde_json::json!({ "repo": repo })).await
+/// Removes a repo's local clone path; idempotent. The catalog row survives.
+pub async fn repos_remove(repo: &str) -> Result<()> {
+    let _: serde_json::Value = call("repos.remove", serde_json::json!({ "repo": repo })).await?;
+    Ok(())
+}
+
+/// Repositories discovered but never acknowledged, newest-first.
+pub async fn repos_new() -> Result<Vec<Repository>> {
+    call("repos.new", serde_json::Value::Null).await
+}
+
+/// Dismisses every currently-new repository (`specs/desktop-ui.md`), returning
+/// how many rows were acknowledged. `first_seen_at` is the dismissal watermark.
+pub async fn repos_ack_new(first_seen_at: &str) -> Result<u64> {
+    call("repos.ack_new", serde_json::json!({ "first_seen_at": first_seen_at })).await
+}
+
+/// Forces a discovery cycle for every account, returning the fresh catalog.
+pub async fn repos_refresh() -> Result<RepoCatalog> {
+    call("repos.refresh", serde_json::Value::Null).await
+}
+
+/// Starts a background clone of `repo` into `target`, returning a `job_id` the
+/// UI polls via [`repos_clone_status`]. HTTPS only; the account's keychain
+/// token is the credential.
+pub async fn repos_clone(repo: &str, target: &str) -> Result<String> {
+    call("repos.clone", serde_json::json!({ "repo": repo, "target": target })).await
+}
+
+/// One clone job's current status, or `None` for an unknown job id.
+pub async fn repos_clone_status(job_id: &str) -> Result<Option<CloneStatus>> {
+    call("repos.clone_status", serde_json::json!({ "job_id": job_id })).await
 }
 
 /// Asks the daemon to poll now rather than waiting for the next cycle.

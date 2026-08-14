@@ -10,6 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountRef,
+  CloneStatus,
   Comment,
   ConflictFile,
   ConflictSession,
@@ -18,7 +19,8 @@ import type {
   PrState,
   PullRequestDetail,
   PullRequestSummary,
-  RepoConfig,
+  RepoCatalog,
+  Repository,
   Rule,
   ScoredItem,
   StatusResult,
@@ -91,19 +93,47 @@ export function listRules(): Promise<Rule[]> {
   return invoke<Rule[]>("list_rules");
 }
 
-/** Lists configured local clone paths for the conflict resolver. */
-export function listRepos(): Promise<RepoConfig[]> {
-  return invoke<RepoConfig[]>("list_repos");
+/**
+ * Lists the repository catalog (`specs/desktop-ui.md`): every discovered repo
+ * with its tracked/clone state, plus the orgs each account can filter by.
+ */
+export function reposList(): Promise<RepoCatalog> {
+  return invoke<RepoCatalog>("repos_list");
 }
 
-/** Registers a local clone path for one repo; daemon validates it. */
-export function setRepo(repo: string, path: string): Promise<RepoConfig[]> {
-  return invoke<RepoConfig[]>("set_repo", { repo, path });
+/** Registers an existing local clone path; validates and marks the repo tracked. */
+export function reposSet(repo: string, path: string): Promise<Repository> {
+  return invoke<Repository>("repos_set", { repo, path });
 }
 
-/** Removes a repo's local clone path. Idempotent. */
-export function removeRepo(repo: string): Promise<RepoConfig[]> {
-  return invoke<RepoConfig[]>("remove_repo", { repo });
+/** Removes a repo's local clone path. Idempotent; the catalog row survives. */
+export function reposRemove(repo: string): Promise<void> {
+  return invoke<void>("repos_remove", { repo });
+}
+
+/** Repositories discovered but never acknowledged, newest-first. */
+export function reposNew(): Promise<Repository[]> {
+  return invoke<Repository[]>("repos_new");
+}
+
+/** Dismisses every currently-new repository; returns how many were acked. */
+export function reposAckNew(firstSeenAt: string): Promise<number> {
+  return invoke<number>("repos_ack_new", { firstSeenAt });
+}
+
+/** Forces a discovery cycle for every account; returns the fresh catalog. */
+export function reposRefresh(): Promise<RepoCatalog> {
+  return invoke<RepoCatalog>("repos_refresh");
+}
+
+/** Starts a background clone into `target`; returns a `job_id` to poll. */
+export function reposClone(repo: string, target: string): Promise<string> {
+  return invoke<string>("repos_clone", { repo, target });
+}
+
+/** One clone job's current status, or `null` when the job id is unknown. */
+export function reposCloneStatus(jobId: string): Promise<CloneStatus | null> {
+  return invoke<CloneStatus | null>("repos_clone_status", { jobId });
 }
 
 /** Asks the daemon to poll now rather than waiting for the next cycle. */

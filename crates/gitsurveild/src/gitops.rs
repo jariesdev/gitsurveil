@@ -40,6 +40,57 @@ pub fn validate_clone(repo: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Clones `clone_url` into `target` using `token` as an HTTPS credential
+/// (`specs/desktop-ui.md`). Used by the daemon's background `repos.clone`
+/// jobs, which own the target path only when they created it — cleanup on a
+/// failed clone is the caller's job and must never touch a pre-existing path.
+///
+/// `on_progress` is called with `(received_bytes, total_bytes)` as git
+/// fetches; `total` stays 0 (git2 can't predict the final pack size). The
+/// callback runs on the cloning thread, so it must stay cheap.
+///
+/// Refuses to clone into a directory that already exists with content: a
+/// fresh clone there would merge with whatever is already in it.
+pub fn clone_repo<F>(
+    clone_url: &str,
+    login: &str,
+    token: &str,
+    target: &Path,
+    mut on_progress: F,
+) -> Result<()>
+where
+    F: FnMut(u64, u64),
+{
+    if target.exists() {
+        let non_empty = std::fs::read_dir(target)?.next().is_some();
+        if non_empty {
+            return Err(DaemonError::Config(format!(
+                "{} already exists and is not empty; pick a new folder or clear it",
+                target.display()
+            )));
+        }
+    }
+
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(|_url, username_from_url, _allowed| {
+        // GitHub accepts the token as the HTTPS password; the username is
+        // ignored but the account login is the conventional value.
+        git2::Cred::userpass_plaintext(username_from_url.unwrap_or(login), token)
+    });
+    callbacks.transfer_progress(|stats| {
+        on_progress(stats.received_bytes() as u64, 0);
+        true
+    });
+
+    let mut fetch_options = git2::FetchOptions::new();
+    fetch_options.remote_callbacks(callbacks);
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.fetch_options(fetch_options);
+
+    builder.clone(clone_url, target)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +139,24 @@ mod tests {
         let err = validate_clone("acme/api", &dir).unwrap_err();
         std::fs::remove_dir_all(&dir).ok();
         assert!(err.to_string().contains("not a git repository"));
+    }
+
+    #[test]
+    fn clone_refuses_a_preexisting_non_empty_target_without_touching_it() {
+        // Regression: a failed clone must never delete content that was in
+        // the target before the job started.
+        let dir = std::env::temp_dir().join(format!("gs-clone-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let survivor = dir.join("keep.txt");
+        std::fs::write(&survivor, "do not delete\n").unwrap();
+        let mut sentinel_ok = true;
+        let result = clone_repo("https://github.com/acme/api.git", "me", "tok", &dir, |_, _| {
+            sentinel_ok = false;
+        });
+        assert!(result.is_err(), "clone must refuse a non-empty target");
+        assert!(sentinel_ok, "clone must fail before any transfer");
+        assert!(survivor.exists(), "preexisting file must survive a failed clone");
+        assert_eq!(std::fs::read_to_string(&survivor).unwrap(), "do not delete\n");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

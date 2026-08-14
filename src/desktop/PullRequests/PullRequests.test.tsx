@@ -11,11 +11,11 @@ import type { AccountRef, PullRequestSummary } from "../../types";
 
 vi.mock("../../ipc", () => ({
   listPullRequests: vi.fn(),
-  listRepos: vi.fn(),
+  reposList: vi.fn(),
   openUrl: vi.fn(),
 }));
 
-const { listPullRequests, listRepos, openUrl } = await import("../../ipc");
+const { listPullRequests, reposList, openUrl } = await import("../../ipc");
 
 const account: AccountRef = {
   id: "acc-1",
@@ -49,10 +49,10 @@ function pr(overrides: Partial<PullRequestSummary> = {}): PullRequestSummary {
 describe("PullRequests row context menu", () => {
   beforeEach(() => {
     vi.mocked(listPullRequests).mockReset();
-    vi.mocked(listRepos).mockReset();
+    vi.mocked(reposList).mockReset();
     vi.mocked(openUrl).mockReset();
     vi.mocked(listPullRequests).mockResolvedValue([pr()]);
-    vi.mocked(listRepos).mockResolvedValue([]);
+    vi.mocked(reposList).mockResolvedValue({ orgs: [], repos: [] });
   });
 
   it("opens the PR in the provider from a row's context menu", async () => {

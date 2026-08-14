@@ -48,6 +48,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_positioner::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::list_items,
             commands::daemon_status,
@@ -61,9 +62,14 @@ fn main() {
             commands::remove_account,
             commands::list_accounts,
             commands::list_rules,
-            commands::list_repos,
-            commands::set_repo,
-            commands::remove_repo,
+            commands::repos_list,
+            commands::repos_set,
+            commands::repos_remove,
+            commands::repos_new,
+            commands::repos_ack_new,
+            commands::repos_refresh,
+            commands::repos_clone,
+            commands::repos_clone_status,
             commands::poll_now,
             commands::pr_detail,
             commands::pr_create,
@@ -355,22 +361,59 @@ mod commands {
         crate::daemon::list_rules().await.map_err(|e| e.to_string())
     }
 
-    /// Lists configured local clone paths for the conflict resolver.
+    /// Lists the repository catalog (`specs/desktop-ui.md`): every discovered
+    /// repo plus the orgs each account can filter by.
     #[tauri::command]
-    pub async fn list_repos() -> Result<serde_json::Value, String> {
+    pub async fn repos_list() -> Result<gitsurveil_proto::RepoCatalog, String> {
         crate::daemon::repos_list().await.map_err(|e| e.to_string())
     }
 
-    /// Registers a local clone path for one repo (daemon-validated).
+    /// Registers a local clone path for one repo (daemon-validated) and marks
+    /// it tracked.
     #[tauri::command]
-    pub async fn set_repo(repo: String, path: String) -> Result<serde_json::Value, String> {
+    pub async fn repos_set(repo: String, path: String) -> Result<gitsurveil_proto::Repository, String> {
         crate::daemon::repos_set(&repo, &path).await.map_err(|e| e.to_string())
     }
 
-    /// Removes a repo's local clone path.
+    /// Removes a repo's local clone path; idempotent. The catalog row survives.
     #[tauri::command]
-    pub async fn remove_repo(repo: String) -> Result<serde_json::Value, String> {
+    pub async fn repos_remove(repo: String) -> Result<(), String> {
         crate::daemon::repos_remove(&repo).await.map_err(|e| e.to_string())
+    }
+
+    /// Repositories discovered but never acknowledged, newest-first.
+    #[tauri::command]
+    pub async fn repos_new() -> Result<Vec<gitsurveil_proto::Repository>, String> {
+        crate::daemon::repos_new().await.map_err(|e| e.to_string())
+    }
+
+    /// Dismisses every currently-new repository; returns how many were acked.
+    #[tauri::command]
+    pub async fn repos_ack_new(first_seen_at: String) -> Result<u64, String> {
+        crate::daemon::repos_ack_new(&first_seen_at)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Forces a discovery cycle for every account; returns the fresh catalog.
+    #[tauri::command]
+    pub async fn repos_refresh() -> Result<gitsurveil_proto::RepoCatalog, String> {
+        crate::daemon::repos_refresh().await.map_err(|e| e.to_string())
+    }
+
+    /// Starts a background clone; returns a `job_id` to poll via
+    /// `repos_clone_status`.
+    #[tauri::command]
+    pub async fn repos_clone(repo: String, target: String) -> Result<String, String> {
+        crate::daemon::repos_clone(&repo, &target).await.map_err(|e| e.to_string())
+    }
+
+    /// One clone job's current status, or `null` for an unknown id.
+    #[tauri::command]
+    pub async fn repos_clone_status(job_id: String) -> Result<Option<gitsurveil_proto::CloneStatus>, String> {
+        crate::daemon::repos_clone_status(&job_id)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Triggers an immediate poll instead of waiting for the next cycle.

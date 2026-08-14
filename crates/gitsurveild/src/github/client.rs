@@ -29,6 +29,33 @@ pub enum NotificationsPoll {
     },
 }
 
+/// A repository as GitHub's REST API reports it — the raw discovery data the
+/// store flattens into `repositories` rows (`specs/desktop-ui.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredRepo {
+    /// The owning organization or user login.
+    pub owner: String,
+    /// The repository name, without the owner.
+    pub name: String,
+    /// Browser URL.
+    pub url: String,
+    /// The repository's description, if it has one.
+    pub description: Option<String>,
+    /// Whether the repository is private.
+    pub private: bool,
+    /// The default branch name.
+    pub default_branch: String,
+    /// HTTPS clone URL, used by the clone engine.
+    pub clone_url: String,
+}
+
+impl DiscoveredRepo {
+    /// `"owner/name"`, the identifier the rest of the API uses.
+    pub fn full_name(&self) -> String {
+        format!("{}/{}", self.owner, self.name)
+    }
+}
+
 /// A GitHub API client scoped to one account (one host, one token).
 pub struct GitHubClient {
     /// Account id this client was built for; stamped onto every result row
@@ -129,6 +156,27 @@ impl GitHubClient {
     /// `GET path`, decoded as JSON.
     pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.request_json(reqwest::Method::GET, path, None).await
+    }
+
+    /// Core requests remaining in the current rate-limit window, from
+    /// `GET /rate_limit`. Discovery checks this before a full catalog pass so
+    /// the background cycle never crowds out the poller's quota
+    /// (`specs/github-integration.md`, "Rate-limit strategy").
+    pub async fn core_remaining(&self) -> Result<u64> {
+        #[derive(Deserialize)]
+        struct RateLimitEnvelope {
+            resources: Resources,
+        }
+        #[derive(Deserialize)]
+        struct Resources {
+            core: Core,
+        }
+        #[derive(Deserialize)]
+        struct Core {
+            remaining: u64,
+        }
+        let envelope: RateLimitEnvelope = self.get_json("/rate_limit").await?;
+        Ok(envelope.resources.core.remaining)
     }
 
     /// `POST path` with a JSON body.
@@ -234,6 +282,34 @@ impl GitHubClient {
         })
     }
 
+    /// Fetches every repository the account can see — those it owns and those
+    /// it collaborates on — across all pages, for the Repositories pane.
+    ///
+    /// This is a catalog feed, not a notification poll: it is only as fresh
+    /// as the last discovery pass, and it intentionally skips forks and
+    /// archived repos GitHub omits from `owner,collaborator` affiliation by
+    /// default.
+    pub async fn list_repos(&self) -> Result<Vec<DiscoveredRepo>> {
+        const PER_PAGE: usize = 100;
+        const MAX_PAGES: usize = 100;
+        let mut repos = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let batch: Vec<RawRepo> = self
+                .get_json(&format!(
+                    "/user/repos?affiliation=owner,collaborator&per_page={PER_PAGE}&page={page}"
+                ))
+                .await?;
+            let len = batch.len();
+            repos.extend(batch.into_iter().map(Into::into));
+            // A short page means the last one; GitHub never returns more than
+            // `per_page` entries. The page ceiling is a defensive bound.
+            if len < PER_PAGE {
+                break;
+            }
+        }
+        Ok(repos)
+    }
+
     /// Runs the combined "review requested" + "assigned" + "ready to merge"
     /// GraphQL search (`specs/github-integration.md`) in a single request.
     ///
@@ -292,6 +368,48 @@ impl GitHubClient {
             }
         }
         Ok(items)
+    }
+}
+
+/// Shape of one entry from `GET /user/repos`
+/// (<https://docs.github.com/en/rest/repos/repos#list-repositories-for-the-authenticated-user>).
+#[derive(Debug, Clone, Deserialize)]
+struct RawRepo {
+    #[serde(rename = "full_name")]
+    full_name: String,
+    name: String,
+    #[serde(rename = "html_url")]
+    html_url: String,
+    description: Option<String>,
+    private: bool,
+    #[serde(rename = "default_branch")]
+    default_branch: String,
+    #[serde(rename = "clone_url")]
+    clone_url: String,
+    owner: RawOwner,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawOwner {
+    login: String,
+}
+
+impl From<RawRepo> for DiscoveredRepo {
+    fn from(raw: RawRepo) -> Self {
+        let (owner, name) = raw
+            .full_name
+            .split_once('/')
+            .map(|(o, n)| (o.to_string(), n.to_string()))
+            .unwrap_or_else(|| (raw.owner.login.clone(), raw.name));
+        DiscoveredRepo {
+            owner,
+            name,
+            url: raw.html_url,
+            description: raw.description,
+            private: raw.private,
+            default_branch: raw.default_branch,
+            clone_url: raw.clone_url,
+        }
     }
 }
 

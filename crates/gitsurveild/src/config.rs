@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use crate::error::{DaemonError, Result};
 use crate::priority::Rule;
 
-/// One configured local clone path (`specs/conflict-resolver.md`). The
-/// conflict resolver only runs against repos that have one of these; the path
-/// is validated on `repos.set` (is a git repo, `origin` matches the repo).
+/// One configured local clone path from pre-catalog configs (`specs/desktop-ui.md`).
+/// Repos now live in SQLite (`crate::store`); this struct survives only so
+/// startup can import the old `repos` block into the catalog once. The path
+/// was validated on `repos.set` back then (is a git repo, `origin` matches).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoConfig {
     /// `"owner/name"` exactly as it appears on GitHub.
@@ -39,9 +40,15 @@ pub struct Config {
     /// editor arrives in Phase 5 and will write through this same file.
     #[serde(default = "crate::priority::default_rules")]
     pub rules: Vec<Rule>,
-    /// Local clone paths used by the conflict resolver
-    /// (`specs/conflict-resolver.md`). Written by the API (`repos.set` /
-    /// `repos.remove`); the resolver is a no-op for repos without one.
+}
+
+/// The `repos` block written by pre-catalog versions. `Config::load` ignores
+/// unknown keys, so the main config keeps parsing even when this key is
+/// present; startup reads it out of the raw file once, imports it, and
+/// rewrites the config without it.
+#[derive(Debug, Deserialize)]
+pub struct LegacyConfig {
+    /// Clone paths registered before the catalog existed.
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
 }
@@ -55,7 +62,6 @@ impl Default for Config {
         Config {
             poll_interval_secs: DEFAULT_POLL_INTERVAL_SECS,
             rules: crate::priority::default_rules(),
-            repos: Vec::new(),
         }
     }
 }
@@ -83,11 +89,22 @@ impl Config {
         toml::from_str(&raw).map_err(|e| DaemonError::Config(e.to_string()))
     }
 
-    /// Writes the config back to `path`. Not yet called — wired up once
-    /// `rules.set` (Phase 4) or a `settings.set` method needs to persist a
-    /// mutation; kept here now since [`Config::load`] is meaningless without
-    /// a matching writer and the two belong next to each other.
-    #[allow(dead_code)]
+    /// Reads just the legacy `repos` block out of `path`, returning `None`
+    /// when the file is missing, has no `repos` key, or that block is empty.
+    /// Callers import whatever comes back into the catalog and then rewrite
+    /// the file via [`Config::save`], so the stale block is seen only once.
+    pub fn load_legacy_repos(path: &Path) -> Option<Vec<RepoConfig>> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let legacy: LegacyConfig = toml::from_str(&raw).ok()?;
+        if legacy.repos.is_empty() {
+            None
+        } else {
+            Some(legacy.repos)
+        }
+    }
+
+    /// Writes the config back to `path`. Startup uses this after importing a
+    /// legacy `repos` block, to rewrite the file without the stale key.
     pub fn save(&self, path: &Path) -> Result<()> {
         let raw = toml::to_string_pretty(self).map_err(|e| DaemonError::Config(e.to_string()))?;
         std::fs::write(path, raw)?;

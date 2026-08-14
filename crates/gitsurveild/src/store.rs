@@ -1,8 +1,10 @@
-//! SQLite state store (`specs/daemon.md`). Owns `accounts`, `items`, and the
+//! SQLite state store (`specs/daemon.md`). Owns `accounts`, `items`, the
 //! per-endpoint `etags` cache used to make no-change polls nearly free
-//! (`specs/github-integration.md`). `history`/`ai_reports` tables are added
-//! in the phases that use them (Phase 5, Phase 8) rather than declared here
-//! unused — schema grows with the feature that needs it.
+//! (`specs/github-integration.md`), and the `repositories`/`clone_jobs`
+//! tables behind the Repositories pane and new-repo detection
+//! (`specs/desktop-ui.md`). `history`/`ai_reports` tables are added in the
+//! phases that use them rather than declared here unused — schema grows with
+//! the feature that needs it.
 //!
 //! A single [`Store`] wraps one `rusqlite::Connection` behind a `Mutex`
 //! (SQLite serializes writers anyway; this avoids a connection pool for a
@@ -11,12 +13,16 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use gitsurveil_proto::{AccountRef, ActionItem, AuthKind, CiStatus, ItemKind, ItemState};
+use gitsurveil_proto::{
+    AccountRef, ActionItem, AuthKind, CiStatus, CloneStatus, ItemKind, ItemState, OrgRef,
+    RepoCatalog, Repository,
+};
 use rusqlite::{params, Connection};
 
-use crate::error::Result;
+use crate::error::{DaemonError, Result};
+use crate::github::client::DiscoveredRepo;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 3;
 
 /// The daemon's persistent state store.
 pub struct Store {
@@ -88,8 +94,53 @@ impl Store {
                 etag       TEXT NOT NULL,
                 PRIMARY KEY (account_id, endpoint)
             );
+            CREATE TABLE IF NOT EXISTS repositories (
+                account_id       TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+                host             TEXT NOT NULL,
+                owner            TEXT NOT NULL,
+                name             TEXT NOT NULL,
+                full_name        TEXT NOT NULL,
+                url              TEXT NOT NULL,
+                description      TEXT,
+                private          INTEGER NOT NULL DEFAULT 0,
+                default_branch   TEXT NOT NULL,
+                clone_url        TEXT NOT NULL,
+                clone_path       TEXT,
+                tracked          INTEGER NOT NULL DEFAULT 0,
+                first_seen_at    TEXT NOT NULL,
+                notified_at      TEXT,
+                last_refreshed_at TEXT NOT NULL,
+                UNIQUE(account_id, full_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_repositories_tracked ON repositories(tracked);
+            CREATE INDEX IF NOT EXISTS idx_repositories_notified ON repositories(notified_at);
+            CREATE TABLE IF NOT EXISTS clone_jobs (
+                id          TEXT PRIMARY KEY,
+                account_id  TEXT NOT NULL,
+                full_name   TEXT NOT NULL,
+                target_path TEXT NOT NULL,
+                target_owned INTEGER NOT NULL DEFAULT 0,
+                status      TEXT NOT NULL,
+                received    INTEGER NOT NULL DEFAULT 0,
+                total       INTEGER NOT NULL DEFAULT 0,
+                error       TEXT,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
             ",
         )?;
+        // v3: `clone_jobs.target_owned` records whether the daemon created the
+        // clone target. Startup and failure cleanup may only remove targets it
+        // created; a pre-existing path is never deleted, no matter what.
+        let has_target_owned = conn
+            .prepare("SELECT 1 FROM pragma_table_info('clone_jobs') WHERE name = 'target_owned'")?
+            .query_row([], |_| Ok(()))
+            .is_ok();
+        if !has_target_owned {
+            conn.execute_batch(
+                "ALTER TABLE clone_jobs ADD COLUMN target_owned INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
         conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?1)",
             params![SCHEMA_VERSION.to_string()],
@@ -148,6 +199,32 @@ impl Store {
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    /// The account row for `id`, or [`None`] when it isn't configured. Used
+    /// by repo operations that need the account behind a catalog row (its
+    /// login and token for cloning).
+    pub fn find_account(&self, id: &str) -> Result<Option<AccountRef>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, host, api_base, login, auth_kind FROM accounts WHERE id = ?1",
+            params![id],
+            |row| {
+                let auth_kind_str: String = row.get(4)?;
+                Ok(AccountRef {
+                    id: row.get(0)?,
+                    host: row.get(1)?,
+                    api_base: row.get(2)?,
+                    login: row.get(3)?,
+                    auth_kind: auth_kind_from_str(&auth_kind_str),
+                })
+            },
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e.into()),
+        })
     }
 
     // ---- items ---------------------------------------------------------
@@ -284,6 +361,416 @@ impl Store {
         )?;
         Ok(())
     }
+
+    // ---- repositories ------------------------------------------------
+
+    /// Merges one discovery pass for an account into the catalog: new repos
+    /// are inserted untracked, known ones have their GitHub-provided fields
+    /// refreshed. `tracked`, `clone_path`, `first_seen_at`, and `notified_at`
+    /// are never overwritten by discovery — they record user intent and the
+    /// *first* time a repo was seen, both of which a refresh must preserve.
+    ///
+    /// The account's very first discovery pass is a baseline: every repo found
+    /// is pre-acknowledged (`notified_at` set), so a fresh install doesn't
+    /// flood the user with "new repository" prompts for repos they already
+    /// had. Subsequent passes leave `notified_at` null so genuinely new repos
+    /// surface via `repos.new`.
+    pub fn upsert_catalog(
+        &self,
+        account_id: &str,
+        host: &str,
+        discovered: &[DiscoveredRepo],
+        now: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let is_baseline: bool = {
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM repositories WHERE account_id = ?1",
+                    params![account_id], |row| row.get(0))?;
+            count == 0
+        };
+        let notified = if is_baseline { Some(now) } else { None };
+        for repo in discovered {
+            conn.execute(
+                "INSERT INTO repositories (
+                    account_id, host, owner, name, full_name, url, description, private,
+                    default_branch, clone_url, clone_path, tracked,
+                    first_seen_at, notified_at, last_refreshed_at
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULL,0,?11,?12,?11)
+                 ON CONFLICT(account_id, full_name) DO UPDATE SET
+                    host = excluded.host,
+                    url = excluded.url,
+                    description = excluded.description,
+                    private = excluded.private,
+                    default_branch = excluded.default_branch,
+                    clone_url = excluded.clone_url,
+                    last_refreshed_at = excluded.last_refreshed_at",
+                params![
+                    account_id,
+                    host,
+                    repo.owner,
+                    repo.name,
+                    repo.full_name(),
+                    repo.url,
+                    repo.description,
+                    repo.private as i64,
+                    repo.default_branch,
+                    repo.clone_url,
+                    now,
+                    notified,
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Every repo and the orgs to group them by, for the Repositories pane
+    /// (`repos.list`). Orgs are derived from the catalog itself (distinct
+    /// `owner` per account) rather than stored separately — an org with no
+    /// discovered repos is an empty filter anyway.
+    pub fn list_catalog(&self) -> Result<RepoCatalog> {
+        let conn = self.conn.lock().unwrap();
+        let mut repos_stmt = conn.prepare(
+            "SELECT account_id, host, owner, name, full_name, url, description, private,
+                    default_branch, clone_url, clone_path, tracked,
+                    first_seen_at, notified_at, last_refreshed_at
+             FROM repositories ORDER BY full_name",
+        )?;
+        let repos = repos_stmt
+            .query_map([], row_to_repository)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        // Legacy rows without an account aren't attributable to any account,
+        // so they're excluded from the org list but still shown in the repo
+        // list under "All accounts".
+        let mut orgs_stmt = conn.prepare(
+            "SELECT account_id, host, owner FROM repositories
+             WHERE account_id IS NOT NULL
+             GROUP BY account_id, host, owner
+             ORDER BY owner",
+        )?;
+        let orgs = orgs_stmt
+            .query_map([], |row| {
+                Ok(OrgRef {
+                    account_id: row.get(0)?,
+                    host: row.get(1)?,
+                    name: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(RepoCatalog { orgs, repos })
+    }
+
+    /// Untracked repos the user hasn't acknowledged yet — `repos.new`.
+    /// A repo leaves this set when its path is registered (`repos.set`, a
+    /// finished `repos.clone`) or via `ack_new_repos` (dismiss-all).
+    pub fn list_new_repos(&self) -> Result<Vec<Repository>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT account_id, host, owner, name, full_name, url, description, private,
+                    default_branch, clone_url, clone_path, tracked,
+                    first_seen_at, notified_at, last_refreshed_at
+             FROM repositories WHERE tracked = 0 AND notified_at IS NULL
+             ORDER BY first_seen_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], row_to_repository)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Marks every unacknowledged new repo as acknowledged (dismiss-all) and
+    /// returns how many rows that covered.
+    pub fn ack_new_repos(&self, now: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn.execute(
+            "UPDATE repositories SET notified_at = ?1 WHERE tracked = 0 AND notified_at IS NULL",
+            params![now],
+        )?;
+        Ok(changed)
+    }
+
+    /// The row for `(account_id, full_name)`, if the account has it in its
+    /// catalog.
+    pub fn find_repo(&self, account_id: &str, full_name: &str) -> Result<Option<Repository>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT account_id, host, owner, name, full_name, url, description, private,
+                    default_branch, clone_url, clone_path, tracked,
+                    first_seen_at, notified_at, last_refreshed_at
+             FROM repositories WHERE account_id = ?1 AND full_name = ?2",
+            params![account_id, full_name],
+            row_to_repository,
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e.into()),
+        })
+    }
+
+    /// Distinct account ids holding a row for `full_name` — how a `repo`-only
+    /// call (no `account_id`) resolves which account it means when the same
+    /// `owner/name` exists under several.
+    pub fn accounts_for_repo(&self, full_name: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT account_id FROM repositories
+             WHERE full_name = ?1 AND account_id IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map(params![full_name], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Registers (or replaces) a repo's local clone path, marks it tracked,
+    /// and acknowledges it as seen. Returns the updated row, or [`None`] when
+    /// the repo isn't in the catalog. Backs both `repos.set` and the tail of a
+    /// successful `repos.clone`.
+    pub fn set_repo_path(
+        &self,
+        account_id: &str,
+        full_name: &str,
+        path: &str,
+        now: &str,
+    ) -> Result<Option<Repository>> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn.execute(
+            "UPDATE repositories SET clone_path = ?3, tracked = 1, notified_at = ?4
+             WHERE account_id = ?1 AND full_name = ?2",
+            params![account_id, full_name, path, now],
+        )?;
+        drop(conn);
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.find_repo(account_id, full_name)
+    }
+
+    /// Clears a repo's local clone path and untracks it (`repos.remove`).
+    /// Idempotent; the repo stays in the catalog so it can be re-registered
+    /// or cloned later.
+    pub fn untrack_repo(&self, account_id: &str, full_name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE repositories SET clone_path = NULL, tracked = 0
+             WHERE account_id = ?1 AND full_name = ?2",
+            params![account_id, full_name],
+        )?;
+        Ok(())
+    }
+
+    /// Imports repos from a pre-catalog config file (the old `repos` block in
+    /// `config.toml`) into the catalog, tracked with their existing clone
+    /// paths. Runs at most once: it's a no-op when the catalog already has
+    /// rows. Rows get `account_id` only when exactly one account is
+    /// configured, otherwise [`None`] — with several accounts there's no way
+    /// to attribute the old list.
+    pub fn import_legacy_repos(&self, legacy: &[(String, String)], now: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let existing: i64 =
+            conn.query_row("SELECT COUNT(*) FROM repositories", [], |row| row.get(0))?;
+        if existing > 0 {
+            return Ok(0);
+        }
+        let account_id: Option<String> = {
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
+            if count == 1 {
+                conn.query_row("SELECT id FROM accounts", [], |row| row.get(0))
+                    .ok()
+            } else {
+                None
+            }
+        };
+        let mut imported = 0;
+        for (full_name, path) in legacy {
+            let (owner, name) = full_name.split_once('/').unwrap_or((full_name.as_str(), ""));
+            let changed = conn.execute(
+                "INSERT OR IGNORE INTO repositories (
+                    account_id, host, owner, name, full_name, url, description, private,
+                    default_branch, clone_url, clone_path, tracked,
+                    first_seen_at, notified_at, last_refreshed_at
+                 ) VALUES (?1,?2,?3,?4,?5,?6,NULL,0,'main',?7,?8,1,?9,?9,?9)",
+                params![
+                    account_id,
+                    "github.com",
+                    owner,
+                    name,
+                    full_name,
+                    // Placeholders only — the next discovery refresh fills in
+                    // the real url/branch/clone_url from GitHub.
+                    format!("https://github.com/{full_name}"),
+                    format!("https://github.com/{full_name}.git"),
+                    path,
+                    now,
+                ],
+            )?;
+            imported += changed as usize;
+        }
+        Ok(imported)
+    }
+
+    // ---- clone jobs ---------------------------------------------------
+
+    /// Creates a `running` clone job and returns its id. The row survives a
+    /// daemon restart so startup can find and clean up the partial clone.
+    ///
+    /// `target_owned` is true only when the target did not exist when the job
+    /// started — i.e. the daemon is about to create it. Cleanup on failure or
+    /// at startup may only remove directories the daemon owns.
+    pub fn create_clone_job(
+        &self,
+        account_id: &str,
+        full_name: &str,
+        target_path: &str,
+        target_owned: bool,
+        now: &str,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO clone_jobs (id, account_id, full_name, target_path, target_owned, status, received, total, error, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,'running',0,0,NULL,?6,?6)",
+            params![id, account_id, full_name, target_path, target_owned as i64, now],
+        )?;
+        Ok(id)
+    }
+
+    /// The current wire status of a clone job, or [`None`] for an unknown id.
+    /// A finished job carries the updated repository row so the UI can mark
+    /// the repo tracked without refetching.
+    pub fn clone_status(&self, job_id: &str) -> Result<Option<CloneStatus>> {
+        let conn = self.conn.lock().unwrap();
+        let job = conn.query_row(
+            "SELECT status, received, total, error, account_id, full_name
+             FROM clone_jobs WHERE id = ?1",
+            params![job_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        );
+        let (status, received, total, error, account_id, full_name) = match job {
+            Ok(job) => job,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        drop(conn);
+        // A done job must show the resulting repo row; the catalog lookup is
+        // a separate query so the status row's column order never needs to
+        // line up with the repository row's.
+        let repo = if status == "done" {
+            let account_id = account_id.ok_or_else(|| {
+                DaemonError::Config("a finished clone job must have an account".into())
+            })?;
+            self.find_repo(&account_id, &full_name)?
+        } else {
+            None
+        };
+        Ok(Some(CloneStatus {
+            job_id: job_id.to_string(),
+            status: match status.as_str() {
+                "done" => gitsurveil_proto::CloneState::Done,
+                "failed" => gitsurveil_proto::CloneState::Failed,
+                _ => gitsurveil_proto::CloneState::Running,
+            },
+            received: received as u64,
+            total: total as u64,
+            repo,
+            error,
+        }))
+    }
+
+    /// Records how many bytes git has fetched. Progress rows are what the
+    /// Repositories pane's progress bar polls (`repos.clone_status`).
+    pub fn update_clone_progress(&self, job_id: &str, received: u64, total: u64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE clone_jobs SET received = ?2, total = ?3 WHERE id = ?1",
+            params![job_id, received as i64, total as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Marks a clone job done and the repo tracked in one step — both halves
+    /// must land together or a crash between them would leave an inconsistent
+    /// "done but not tracked" repo. Returns the updated repo row.
+    pub fn finish_clone_job(&self, job_id: &str, now: &str) -> Result<Option<Repository>> {
+        let conn = self.conn.lock().unwrap();
+        let (account_id, full_name, target_path): (String, String, String) = conn.query_row(
+            "SELECT account_id, full_name, target_path FROM clone_jobs WHERE id = ?1",
+            params![job_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        conn.execute(
+            "UPDATE clone_jobs SET status = 'done', updated_at = ?2 WHERE id = ?1",
+            params![job_id, now],
+        )?;
+        drop(conn);
+        self.set_repo_path(&account_id, &full_name, &target_path, now)
+    }
+
+    /// Marks a clone job failed with `error` as the reason shown in the UI.
+    pub fn fail_clone_job(&self, job_id: &str, error: &str, now: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE clone_jobs SET status = 'failed', error = ?2, updated_at = ?3 WHERE id = ?1",
+            params![job_id, error, now],
+        )?;
+        Ok(())
+    }
+
+    /// Jobs left `running` by a previous daemon run, as
+    /// `(job_id, target_path, target_owned)`. Their partial targets must be
+    /// removed and the rows deleted at startup (or the next clone into the
+    /// same path would collide with a half-finished checkout) — but only when
+    /// `target_owned` says the daemon created the target.
+    pub fn stale_running_jobs(&self) -> Result<Vec<(String, String, bool)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT id, target_path, target_owned FROM clone_jobs WHERE status = 'running'")?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)? != 0)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Removes a clone job row (used after cleaning up a stale running job).
+    pub fn delete_clone_job(&self, job_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM clone_jobs WHERE id = ?1", params![job_id])?;
+        Ok(())
+    }
+}
+
+fn row_to_repository(row: &rusqlite::Row) -> rusqlite::Result<Repository> {
+    let description: Option<String> = row.get(6)?;
+    let private: i64 = row.get(7)?;
+    let tracked: i64 = row.get(11)?;
+    Ok(Repository {
+        account_id: row.get(0)?,
+        host: row.get(1)?,
+        owner: row.get(2)?,
+        name: row.get(3)?,
+        full_name: row.get(4)?,
+        url: row.get(5)?,
+        description,
+        private: private != 0,
+        default_branch: row.get(8)?,
+        clone_url: row.get(9)?,
+        clone_path: row.get(10)?,
+        tracked: tracked != 0,
+        first_seen_at: row.get(12)?,
+        notified_at: row.get(13)?,
+        last_refreshed_at: row.get(14)?,
+    })
 }
 
 fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ActionItem> {
@@ -482,5 +969,158 @@ mod tests {
 
         store.remove_account("acc-1").unwrap();
         assert!(store.items_for_account("acc-1").unwrap().is_empty());
+    }
+
+    fn sample_discovered(name: &str) -> DiscoveredRepo {
+        DiscoveredRepo {
+            owner: "acme".into(),
+            name: name.into(),
+            url: format!("https://github.com/acme/{name}"),
+            description: None,
+            private: false,
+            default_branch: "main".into(),
+            clone_url: format!("https://github.com/acme/{name}.git"),
+        }
+    }
+
+    #[test]
+    fn catalog_baseline_acks_first_pass_only() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        let t0 = "2026-08-01T00:00:00Z";
+        let t1 = "2026-08-02T00:00:00Z";
+
+        // First discovery is a baseline: the repo is recorded but acked so it
+        // never floods the new-repo modal.
+        store
+            .upsert_catalog("acc-1", "github.com", &[sample_discovered("api")], t0)
+            .unwrap();
+        assert!(store.list_new_repos().unwrap().is_empty());
+
+        // A repo appearing in a later pass is genuinely new.
+        store
+            .upsert_catalog("acc-1", "github.com", &[sample_discovered("newlib")], t1)
+            .unwrap();
+        let new = store.list_new_repos().unwrap();
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].full_name, "acme/newlib");
+
+        // Dismiss-all acks just the pending row, and only once.
+        assert_eq!(store.ack_new_repos(t1).unwrap(), 1);
+        assert_eq!(store.ack_new_repos(t1).unwrap(), 0);
+        assert!(store.list_new_repos().unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_repo_path_tracks_and_acks() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store
+            .upsert_catalog("acc-1", "github.com", &[sample_discovered("api")], "t0")
+            .unwrap();
+
+        let row = store
+            .set_repo_path("acc-1", "acme/api", "/tmp/acme-api", "t1")
+            .unwrap()
+            .expect("repo is in the catalog");
+        assert!(row.tracked);
+        assert_eq!(row.clone_path.as_deref(), Some("/tmp/acme-api"));
+        assert_eq!(row.notified_at.as_deref(), Some("t1"));
+        assert!(store.list_new_repos().unwrap().is_empty());
+
+        store.untrack_repo("acc-1", "acme/api").unwrap();
+        let row = store.find_repo("acc-1", "acme/api").unwrap().unwrap();
+        assert!(!row.tracked);
+        assert!(row.clone_path.is_none());
+    }
+
+    #[test]
+    fn clone_job_runs_and_finishes_tracked() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store
+            .upsert_catalog("acc-1", "github.com", &[sample_discovered("api")], "t0")
+            .unwrap();
+
+        let job = store
+            .create_clone_job("acc-1", "acme/api", "/tmp/acme-api", true, "t1")
+            .unwrap();
+        let status = store.clone_status(&job).unwrap().unwrap();
+        assert_eq!(status.status, gitsurveil_proto::CloneState::Running);
+        assert_eq!(status.repo, None);
+
+        store.update_clone_progress(&job, 4096, 0).unwrap();
+        assert_eq!(store.clone_status(&job).unwrap().unwrap().received, 4096);
+
+        let repo = store
+            .finish_clone_job(&job, "t2")
+            .unwrap()
+            .expect("finished clone carries the repo row");
+        assert!(repo.tracked);
+        assert_eq!(repo.clone_path.as_deref(), Some("/tmp/acme-api"));
+        let status = store.clone_status(&job).unwrap().unwrap();
+        assert_eq!(status.status, gitsurveil_proto::CloneState::Done);
+        assert_eq!(status.repo, Some(repo));
+    }
+
+    #[test]
+    fn failed_and_stale_clone_jobs() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store
+            .upsert_catalog("acc-1", "github.com", &[sample_discovered("api")], "t0")
+            .unwrap();
+
+        let failed = store
+            .create_clone_job("acc-1", "acme/api", "/tmp/a", false, "t1")
+            .unwrap();
+        store.fail_clone_job(&failed, "network error", "t2").unwrap();
+        let status = store.clone_status(&failed).unwrap().unwrap();
+        assert_eq!(status.status, gitsurveil_proto::CloneState::Failed);
+        assert_eq!(status.error.as_deref(), Some("network error"));
+        // A failed job is never "stale running" at startup.
+        assert!(store.stale_running_jobs().unwrap().is_empty());
+
+        // A running job left behind by a crash shows up for cleanup.
+        let stale = store
+            .create_clone_job("acc-1", "acme/api", "/tmp/b", true, "t3")
+            .unwrap();
+        let pending = store.stale_running_jobs().unwrap();
+        assert_eq!(pending, vec![(stale.clone(), "/tmp/b".into(), true)]);
+
+        // A job whose target pre-existed is reported so startup leaves it be.
+        let preexisting = store
+            .create_clone_job("acc-1", "acme/api", "/tmp/c", false, "t4")
+            .unwrap();
+        let pending = store.stale_running_jobs().unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(pending.contains(&(preexisting.clone(), "/tmp/c".into(), false)));
+
+        store.delete_clone_job(&stale).unwrap();
+        store.delete_clone_job(&preexisting).unwrap();
+        assert!(store.stale_running_jobs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_repos_import_once_with_sole_account() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+
+        let imported = store
+            .import_legacy_repos(&[("acme/api".into(), "/tmp/acme-api".into())], "t0")
+            .unwrap();
+        assert_eq!(imported, 1);
+        let row = store.find_repo("acc-1", "acme/api").unwrap().unwrap();
+        assert!(row.tracked);
+        assert_eq!(row.clone_path.as_deref(), Some("/tmp/acme-api"));
+
+        // A second import is a no-op once the catalog has rows.
+        assert_eq!(
+            store
+                .import_legacy_repos(&[("acme/other".into(), "/tmp/x".into())], "t1")
+                .unwrap(),
+            0
+        );
+        assert!(store.find_repo("acc-1", "acme/other").unwrap().is_none());
     }
 }

@@ -1,8 +1,10 @@
 //! The local API server (`specs/daemon.md`): newline-delimited JSON over a
-//! unix domain socket (macOS/Linux) or a named pipe (Windows). Phase 1
+//! unix domain socket (macOS/Linux) or a named pipe (Windows).
 //! Implements `status`, `items.{list,history,dismiss,undismiss}`,
-//! `accounts.{add,list,remove}`, `rules.list`, and `poll.now`. Later phases
-//! add more `match` arms to [`dispatch`] without touching the transport code.
+//! `accounts.{add,list,remove}`, `rules.list`, `repos.{list,set,remove,new,
+//! ack_new,refresh,clone,clone_status}`, `conflicts.*`, `pr.*`, `prs.list`,
+//! and `poll.now`. Later phases add more `match` arms to [`dispatch`] without
+//! touching the transport code.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,15 +13,13 @@ use std::time::Instant;
 
 use chrono::Utc;
 use gitsurveil_proto::{
-    AccountRef, AuthKind, ConflictSession, PrState, PullRequestSummary, Request, Response,
-    StatusResult,
+    AccountRef, AuthKind, CloneStatus, ConflictSession, PrState, PullRequestSummary, Request,
+    Response, StatusResult,
 };
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::config::{Config, RepoConfig};
-use crate::conflicts::session::{PrepareInputs, Session};
-use crate::error::{DaemonError, Result};
+use crate::conflicts::session::{PrepareInputs, Session};use crate::error::{DaemonError, Result};
 use crate::github::GitHubClient;
 use crate::keychain;
 use crate::priority::{self, Rule};
@@ -33,12 +33,6 @@ pub struct ServerState {
     /// every request rather than cached, since age escalation means an item's
     /// priority drifts with the clock even when nothing about it changed.
     pub rules: Vec<Rule>,
-    /// The live config. `rules`/`poll_interval_secs` are the startup snapshot
-    /// (unchanged at runtime); `repos` is mutated through `repos.set` and
-    /// `repos.remove`, which rewrite the file.
-    pub config: Mutex<Config>,
-    /// Where [`Config::save`] writes, so the API can persist its own changes.
-    pub config_path: PathBuf,
     /// Live conflict-resolution sessions (`specs/conflict-resolver.md`),
     /// keyed by `"owner/name"` — one per repo, in memory only, torn down on
     /// daemon restart.
@@ -239,6 +233,11 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "repos.list" => handle_repos_list(state),
         "repos.set" => handle_repos_set(state, req.params).await,
         "repos.remove" => handle_repos_remove(state, req.params).await,
+        "repos.new" => handle_repos_new(state),
+        "repos.ack_new" => handle_repos_ack_new(state, req.params),
+        "repos.refresh" => handle_repos_refresh(state).await,
+        "repos.clone" => handle_repos_clone(state, req.params).await,
+        "repos.clone_status" => handle_repos_clone_status(state, req.params),
         "conflicts.prepare" => handle_conflicts_prepare(state, req.params).await,
         "conflicts.file" => handle_conflicts_file(state, req.params).await,
         "conflicts.save" => handle_conflicts_save(state, req.params).await,
@@ -505,17 +504,53 @@ struct RepoRemoveParams {
     repo: String,
 }
 
-/// Returns the configured local clone paths (`specs/conflict-resolver.md`).
+/// Params for `repos.ack_new`. The catalog row's `first_seen_at` is the ack
+/// watermark: only rows seen before it are acknowledged, so a discovery that
+/// lands during the call can't have its rows silently acked.
+#[derive(Debug, Deserialize)]
+struct RepoAckParams {
+    first_seen_at: String,
+}
+
+/// Params for `repos.clone`. `target` must be an absolute path to an empty
+/// or absent directory. The daemon creates the target when it is absent and,
+/// on failure, removes it again so a retry starts clean — but only when it
+/// created it. A pre-existing path is never deleted, no matter what.
+#[derive(Debug, Deserialize)]
+struct RepoCloneParams {
+    repo: String,
+    target: PathBuf,
+}
+
+/// Resolves the catalog row for a `repo`-only call. Repo operations don't
+/// carry an `account_id`, so the account is inferred the way `pr.*` does:
+/// the first account that has the repo in its catalog. Rows with no account
+/// (legacy imports) can't be resolved this way and are reported unknown.
+fn catalog_repo(state: &ServerState, repo: &str) -> Result<gitsurveil_proto::Repository> {
+    let account_id = state
+        .store
+        .accounts_for_repo(repo)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| DaemonError::Config(format!("unknown repo {repo}")))?;
+    state
+        .store
+        .find_repo(&account_id, repo)?
+        .ok_or_else(|| DaemonError::Config(format!("unknown repo {repo}")))
+}
+
+/// Returns the full repository catalog: every repo the daemon knows about,
+/// with its tracked/clone state, and the orgs each account can filter by
+/// (`specs/desktop-ui.md`). This is the pane's single read — it replaces the
+/// old `repos.list` (config block) and `list_orgs` (derived here).
 fn handle_repos_list(state: &ServerState) -> Result<serde_json::Value> {
-    let repos = state.config.lock().expect("config mutex poisoned").repos.clone();
-    Ok(serde_json::to_value(repos).expect("Vec<RepoConfig> always serializes"))
+    Ok(serde_json::to_value(state.store.list_catalog()?).expect("RepoCatalog always serializes"))
 }
 
 /// Registers a local clone path for one repo. Validates the path (is a git
 /// repo, `origin` points at `owner/name`) before it's stored, so a typo'd
-/// path can't silently disable conflict resolution later. Replaces any
-/// previous entry for the same repo; writes the config through before
-/// responding so the change survives a restart.
+/// path can't silently disable conflict resolution later. Marks the repo
+/// tracked and acks it as seen (a tracked repo is no longer "new").
 async fn handle_repos_set(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
     let params: RepoSetParams =
         serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
@@ -531,28 +566,180 @@ async fn handle_repos_set(state: &ServerState, params: serde_json::Value) -> Res
         .await
         .map_err(|e| DaemonError::Io(std::io::Error::other(e)))??;
 
-    let mut config = state.config.lock().expect("config mutex poisoned");
-    config.repos.retain(|entry| entry.repo != params.repo);
-    config.repos.push(RepoConfig {
-        repo: params.repo,
-        path: params.path,
-    });
-    config.save(&state.config_path)?;
-    Ok(serde_json::to_value(&config.repos).expect("Vec<RepoConfig> always serializes"))
+    let row = catalog_repo(state, &params.repo)?;
+    let account_id = row
+        .account_id
+        .as_deref()
+        .ok_or_else(|| DaemonError::Config(format!("cannot set a clone path for {}", params.repo)))?;
+    let now = crate::poller::now_rfc3339();
+    let updated =
+        state
+            .store
+            .set_repo_path(account_id, &params.repo, &params.path.to_string_lossy(), &now)?;
+    let repo_row = updated
+        .ok_or_else(|| DaemonError::Config("repo vanished during repos.set".into()))?;
+    Ok(serde_json::to_value(&repo_row).expect("Repository always serializes"))
 }
 
 /// Removes a repo's local clone path. Idempotent: removing a repo that isn't
-/// configured is a no-op rather than an error, so a UI retry can't wedge.
+/// tracked (or isn't in the catalog at all) is a no-op rather than an error,
+/// so a UI retry can't wedge. The catalog row survives (untracked) —
+/// discovery owns it, not the user.
 async fn handle_repos_remove(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
     let params: RepoRemoveParams =
         serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
-    let mut config = state.config.lock().expect("config mutex poisoned");
-    let before = config.repos.len();
-    config.repos.retain(|entry| entry.repo != params.repo);
-    if config.repos.len() != before {
-        config.save(&state.config_path)?;
+    if let Some(account_id) = state.store.accounts_for_repo(&params.repo)?.into_iter().next() {
+        state.store.untrack_repo(&account_id, &params.repo)?;
     }
-    Ok(serde_json::to_value(&config.repos).expect("Vec<RepoConfig> always serializes"))
+    Ok(serde_json::Value::Null)
+}
+
+/// Returns repos that were discovered but never acked (`tracked = false` and
+/// never notified), newest-first. `dismiss` clears the whole set via
+/// `repos.ack_new`; acting on one marks it tracked (which acks it).
+fn handle_repos_new(state: &ServerState) -> Result<serde_json::Value> {
+    Ok(serde_json::to_value(state.store.list_new_repos()?).expect("Vec<Repository> always serializes"))
+}
+
+/// Acknowledges every currently-new repo as seen (`specs/desktop-ui.md`):
+/// the modal's "Not now" button. Returns how many rows were acked. Rows
+/// tracked since they went new are skipped, so this never silently clears a
+/// repo the user is mid-setup on.
+fn handle_repos_ack_new(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: RepoAckParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let acked = state.store.ack_new_repos(&params.first_seen_at)?;
+    Ok(serde_json::to_value(acked).expect("u64 always serializes"))
+}
+
+/// Forces a discovery cycle for every account, then returns the fresh
+/// catalog. The background loop also refreshes on its own six-hour cadence;
+/// this is the pane's manual "Refresh" and the modal's first-run baseline.
+async fn handle_repos_refresh(state: &ServerState) -> Result<serde_json::Value> {
+    crate::discovery::discover_all_accounts(&state.store).await;
+    Ok(serde_json::to_value(state.store.list_catalog()?).expect("RepoCatalog always serializes"))
+}
+
+/// Starts a background clone of `repo` into `target`, returning immediately
+/// with a `job_id` the UI polls via `repos.clone_status`. Clones are HTTPS
+/// only (`specs/desktop-ui.md`); the account's keychain token is the
+/// credential. Progress updates are byte-based; the final state also marks
+/// the repo tracked, so the modal row collapses once the clone lands.
+async fn handle_repos_clone(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: RepoCloneParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    if !is_repo_slug(&params.repo) {
+        return Err(DaemonError::InvalidParams(format!(
+            "repo must be \"owner/name\", got {:?}",
+            params.repo
+        )));
+    }
+    if !params.target.is_absolute() {
+        return Err(DaemonError::InvalidParams(format!(
+            "target must be an absolute path, got {:?}",
+            params.target
+        )));
+    }
+
+    let repo_row = catalog_repo(state, &params.repo)?;
+    let account_id = repo_row.account_id.as_deref().ok_or_else(|| {
+        DaemonError::Config(format!("cannot clone {}: no owning account", params.repo))
+    })?;
+    let account = state
+        .store
+        .find_account(account_id)?
+        .ok_or_else(|| DaemonError::UnknownAccount(account_id.to_string()))?;
+    let token = keychain::get_token(&account.id)?
+        .ok_or_else(|| DaemonError::UnknownAccount(account.id.clone()))?;
+
+    let now = crate::poller::now_rfc3339();
+    // The daemon only owns the target when it is provably absent before the
+    // clone starts. Any error other than NotFound (e.g. a permission failure
+    // that could hide an existing target) keeps it pre-existing, so failure
+    // cleanup never touches it.
+    let target_owned = match std::fs::metadata(&params.target) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        _ => false,
+    };
+    let job_id = state.store.create_clone_job(
+        account_id,
+        &repo_row.full_name,
+        &params.target.to_string_lossy(),
+        target_owned,
+        &now,
+    )?;
+
+    let store = Arc::clone(&state.store);
+    let job = job_id.clone();
+    let clone_url = repo_row.clone_url.clone();
+    let login = account.login.clone();
+    let target = params.target.clone();
+    tokio::spawn(async move {
+        let block_store = Arc::clone(&store);
+        let block_job = job.clone();
+        let block_target = target.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut last = 0u64;
+            crate::gitops::clone_repo(&clone_url, &login, &token, &block_target, |received, total| {
+                // git2 reports progress very frequently; write through to the
+                // store only when a meaningful chunk arrived (or the first
+                // report) so a big clone doesn't hammer SQLite.
+                if received == 0 || received.saturating_sub(last) >= 512 * 1024 {
+                    last = received;
+                    let _ = block_store.update_clone_progress(&block_job, received, total);
+                }
+            })
+        })
+        .await;
+
+        let now = crate::poller::now_rfc3339();
+        match result {
+            Ok(Ok(())) => {
+                if let Err(e) = store.finish_clone_job(&job, &now) {
+                    tracing::error!(job = %job, "could not record finished clone: {e}");
+                }
+            }
+            Ok(Err(e)) => {
+                // Remove the partial checkout so a retry into the same folder
+                // starts clean — but only when the daemon created the target.
+                // A pre-existing path (which `clone_repo` refuses to touch) is
+                // never deleted, no matter how the clone failed.
+                if target_owned {
+                    match std::fs::remove_dir_all(&target) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(ioe) => {
+                            tracing::warn!(job = %job, "could not remove partial clone: {ioe}")
+                        }
+                    }
+                }
+                if let Err(e) = store.fail_clone_job(&job, &e.to_string(), &now) {
+                    tracing::error!(job = %job, "could not record failed clone: {e}");
+                }
+            }
+            Err(join) => {
+                if let Err(e) = store.fail_clone_job(&job, &format!("clone thread panicked: {join}"), &now) {
+                    tracing::error!(job = %job, "could not record failed clone: {e}");
+                }
+            }
+        }
+    });
+
+    Ok(serde_json::to_value(&job_id).expect("String always serializes"))
+}
+
+/// Returns one clone job's current status, or `null` when the job id is
+/// unknown (e.g. the daemon restarted and cleaned it up). `None` lets the UI
+/// stop polling instead of erroring.
+fn handle_repos_clone_status(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    #[derive(Debug, Deserialize)]
+    struct Params {
+        job_id: String,
+    }
+    let params: Params =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let status: Option<CloneStatus> = state.store.clone_status(&params.job_id)?;
+    Ok(serde_json::to_value(status).expect("Option<CloneStatus> always serializes"))
 }
 
 /// Runs one conflict-resolver step against a session, in a blocking thread
@@ -596,14 +783,9 @@ async fn handle_conflicts_prepare(
             params.repo
         )));
     }
-    let clone_path = state
-        .config
-        .lock()
-        .expect("config mutex poisoned")
-        .repos
-        .iter()
-        .find(|r| r.repo == params.repo)
-        .map(|r| r.path.clone())
+    let clone_path = catalog_repo(state, &params.repo)?
+        .clone_path
+        .map(PathBuf::from)
         .ok_or_else(|| {
             DaemonError::Config(format!(
                 "no local clone configured for {} — add one in Settings",
@@ -946,11 +1128,37 @@ mod tests {
             store: Arc::new(Store::open_in_memory().unwrap()),
             started_at: Instant::now(),
             rules: Vec::new(),
-            config: Mutex::new(Config::default()),
-            config_path: PathBuf::from(""),
             sessions: Mutex::new(HashMap::new()),
             data_dir: std::env::temp_dir(),
         }
+    }
+
+    /// Seeds one account (`acc-1`) with a single discovered repo so catalog
+    /// queries have a row to return. `repositories.account_id` is a FK, so
+    /// the account must exist first.
+    fn seed_catalog(store: &Store) {
+        store
+            .upsert_account(&AccountRef {
+                id: "acc-1".into(),
+                host: "github.com".into(),
+                api_base: "https://api.github.com".into(),
+                login: "octocat".into(),
+                auth_kind: AuthKind::Pat,
+            })
+            .unwrap();
+        let now = crate::poller::now_rfc3339();
+        let repo = crate::github::client::DiscoveredRepo {
+            owner: "acme".into(),
+            name: "api".into(),
+            url: "https://github.com/acme/api".into(),
+            description: None,
+            private: false,
+            default_branch: "main".into(),
+            clone_url: "https://github.com/acme/api.git".into(),
+        };
+        store
+            .upsert_catalog("acc-1", "github.com", std::slice::from_ref(&repo), &now)
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1158,17 +1366,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repos_remove_is_idempotent_and_persists() {
+    async fn repos_remove_is_idempotent() {
         let state = test_state();
         let params = serde_json::json!({ "repo": "acme/api" });
+        // Unknown repos are a no-op (returns null), and a retry must not error.
         let resp = dispatch(
             &state,
             Request { id: 8, method: "repos.remove".into(), params: params.clone() },
         )
         .await;
-        let list = resp.result.unwrap();
-        assert_eq!(list, serde_json::json!([]));
-        // A second remove on the same repo must not error.
+        assert!(resp.result.is_some());
+        assert_eq!(resp.result.unwrap(), serde_json::Value::Null);
         let resp = dispatch(
             &state,
             Request { id: 9, method: "repos.remove".into(), params },
@@ -1178,12 +1386,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn conflicts_prepare_rejects_a_repo_with_no_configured_clone() {
+    async fn repos_new_ack_new_round_trip() {
+        let state = test_state();
+        seed_catalog(&state.store);
+        // `seed_catalog`'s first pass was a baseline (acks its rows, no flood).
+        // A *later* discovery adding a brand-new repo is what makes it "new".
+        let now = crate::poller::now_rfc3339();
+        let newlib = crate::github::client::DiscoveredRepo {
+            owner: "acme".into(),
+            name: "newlib".into(),
+            url: "https://github.com/acme/newlib".into(),
+            description: None,
+            private: false,
+            default_branch: "main".into(),
+            clone_url: "https://github.com/acme/newlib.git".into(),
+        };
+        state
+            .store
+            .upsert_catalog("acc-1", "github.com", std::slice::from_ref(&newlib), &now)
+            .unwrap();
+
+        let resp = dispatch(&state, Request { id: 10, method: "repos.new".into(), params: serde_json::Value::Null }).await;
+        let new_repos = resp.result.unwrap();
+        assert_eq!(new_repos.as_array().unwrap().len(), 1);
+        assert_eq!(new_repos[0]["full_name"], "acme/newlib");
+
+        // Dismiss-all acks the row; it leaves the new set.
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 11,
+                method: "repos.ack_new".into(),
+                params: serde_json::json!({ "first_seen_at": now }),
+            },
+        )
+        .await;
+        assert_eq!(resp.result.unwrap(), serde_json::json!(1));
+        let resp = dispatch(&state, Request { id: 12, method: "repos.new".into(), params: serde_json::Value::Null }).await;
+        assert_eq!(resp.result.unwrap(), serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn repos_list_returns_catalog_and_orgs() {
+        let state = test_state();
+        seed_catalog(&state.store);
+
+        let resp = dispatch(&state, Request { id: 13, method: "repos.list".into(), params: serde_json::Value::Null }).await;
+        let catalog = resp.result.unwrap();
+        assert_eq!(catalog["orgs"][0]["name"], "acme");
+        assert_eq!(catalog["repos"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn conflicts_prepare_rejects_a_repo_not_in_the_catalog() {
         let state = test_state();
         let resp = dispatch(
             &state,
             Request {
-                id: 10,
+                id: 14,
+                method: "conflicts.prepare".into(),
+                params: serde_json::json!({ "repo": "acme/api", "number": 1 }),
+            },
+        )
+        .await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "config_error");
+        assert!(err.message.contains("unknown repo acme/api"));
+    }
+
+    #[tokio::test]
+    async fn conflicts_prepare_rejects_a_catalog_repo_without_a_clone() {
+        let state = test_state();
+        seed_catalog(&state.store);
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 15,
                 method: "conflicts.prepare".into(),
                 params: serde_json::json!({ "repo": "acme/api", "number": 1 }),
             },

@@ -120,15 +120,75 @@ export interface Rule {
 }
 
 /**
- * One configured local clone path (`specs/conflict-resolver.md`). The daemon
- * validates the path on `repos.set`; conflict resolution only works for repos
- * listed here.
+ * A repository known to the daemon's catalog (`specs/desktop-ui.md`).
+ *
+ * Rows are keyed by `(account_id, full_name)`; `full_name` is the
+ * `"owner/name"` identifier the rest of the API already uses.
  */
-export interface RepoConfig {
-  /** `"owner/name"` exactly as it appears on GitHub. */
-  repo: string;
-  /** Absolute path to a local clone of that repository. */
-  path: string;
+export interface Repository {
+  /** The account the repo was discovered under; `null` for legacy rows. */
+  account_id: string | null;
+  /** `github.com` or a GitHub Enterprise host. */
+  host: string;
+  /** The owning organization or user login. */
+  owner: string;
+  /** The repository name, without the owner. */
+  name: string;
+  /** `"owner/name"`. */
+  full_name: string;
+  /** Browser URL of the repository. */
+  url: string;
+  description: string | null;
+  private: boolean;
+  default_branch: string;
+  /** HTTPS clone URL used by the clone engine. */
+  clone_url: string;
+  /** Absolute path of the registered local clone, when tracked. */
+  clone_path: string | null;
+  /** Whether a local clone is registered (`repos.set` or a finished clone). */
+  tracked: boolean;
+  /** When the daemon first saw the repo. Basis of new-repo detection. */
+  first_seen_at: string;
+  /** When the user acknowledged the new repo; `null` until they have. */
+  notified_at: string | null;
+  /** When discovery last refreshed this row. */
+  last_refreshed_at: string;
+}
+
+/** One organization (or owner login) discovered for an account. */
+export interface OrgRef {
+  account_id: string;
+  host: string;
+  /** The organization or owner login. */
+  name: string;
+}
+
+/** Everything the Repositories pane renders. */
+export interface RepoCatalog {
+  /** Distinct organizations per account, for the Organization filter. */
+  orgs: OrgRef[];
+  /** Every discovered repository, tracked or not. */
+  repos: Repository[];
+}
+
+/** Which phase a `repos.clone` background job is in. */
+export type CloneState = "running" | "done" | "failed";
+
+/** Status of one `repos.clone` background job, polled by the UI. */
+export interface CloneStatus {
+  job_id: string;
+  status: CloneState;
+  /** Bytes received so far; meaningful only while running. */
+  received: number;
+  /**
+   * Total bytes git expects. 0 for the whole transfer — git2 can't predict
+   * the pack size, so the UI shows an indeterminate bar when total is 0.
+   */
+  total: number;
+  /** The tracked repository, present once the clone finished. */
+  repo: Repository | null;
+  /** Failure detail, present when the clone failed. */
+  error: string | null;
 }
 
 /** How the dashboard groups items. */

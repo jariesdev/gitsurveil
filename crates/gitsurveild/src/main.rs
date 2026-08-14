@@ -10,6 +10,7 @@
 
 mod config;
 mod conflicts;
+mod discovery;
 mod error;
 mod gitops;
 mod github;
@@ -159,23 +160,59 @@ async fn run() -> error::Result<()> {
     let store = Arc::new(Store::open(&db_path)?);
     tracing::info!(path = %db_path.display(), "store opened");
 
+    // One-time migration of the pre-catalog `repos` block into the catalog.
+    // The import itself is a no-op once `repositories` already has rows, and
+    // the file is rewritten without the stale key so the block is read once.
+    // (specs/desktop-ui.md, "Migration")
+    if let Some(legacy) = Config::load_legacy_repos(&config_path) {
+        let entries: Vec<(String, String)> = legacy
+            .into_iter()
+            .map(|r| (r.repo, r.path.to_string_lossy().into_owned()))
+            .collect();
+        let imported = store.import_legacy_repos(&entries, &crate::poller::now_rfc3339())?;
+        if imported > 0 {
+            tracing::info!(count = imported, "imported legacy clone paths into the catalog");
+            config.save(&config_path)?;
+        }
+    }
+
+    // A crash can leave a clone job `running` with a half-fetched checkout on
+    // disk. Drop the partial targets and their job rows so a retry into the
+    // same folder starts clean (specs/desktop-ui.md). Only targets the daemon
+    // itself created are removed; a pre-existing path is left untouched, no
+    // matter what state the job died in.
+    for (job_id, target, target_owned) in store.stale_running_jobs()? {
+        if target_owned {
+            match std::fs::remove_dir_all(&target) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(job = %job_id, "could not remove partial clone {target}: {e}")
+                }
+            }
+        }
+        store.delete_clone_job(&job_id)?;
+        tracing::warn!(job = %job_id, "cleaned up stale clone job");
+    }
+
     let state = Arc::new(ServerState {
         store: Arc::clone(&store),
         started_at: Instant::now(),
         rules: config.rules.clone(),
-        config: std::sync::Mutex::new(config.clone()),
-        config_path: config_path.clone(),
         sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
         data_dir: data_dir.clone(),
     });
 
     // Sessions are in-memory only, so a daemon restart orphans any worktrees
     // a previous run created. Prune them before the server accepts requests
-    // (specs/conflict-resolver.md AC-2.5).
-    for repo in &config.repos {
-        match conflicts::session::prune_orphaned(&repo.path) {
-            Ok(()) => tracing::debug!(repo = %repo.repo, "pruned orphaned conflict worktrees"),
-            Err(e) => tracing::warn!(repo = %repo.repo, "could not prune orphaned conflict worktrees: {e}"),
+    // (specs/conflict-resolver.md AC-2.5). Sources are the catalog's tracked
+    // clones rather than the old config block.
+    let catalog = store.list_catalog()?;
+    for repo in catalog.repos.iter().filter(|r| r.tracked) {
+        let Some(path) = &repo.clone_path else { continue };
+        match conflicts::session::prune_orphaned(std::path::Path::new(path)) {
+            Ok(()) => tracing::debug!(repo = %repo.full_name, "pruned orphaned conflict worktrees"),
+            Err(e) => tracing::warn!(repo = %repo.full_name, "could not prune orphaned conflict worktrees: {e}"),
         }
     }
 
@@ -184,6 +221,10 @@ async fn run() -> error::Result<()> {
         config.rules,
         config.poll_interval_secs,
     ));
+
+    // Background catalog refresh (`specs/desktop-ui.md`): six-hour cadence
+    // plus an on-demand cycle through `repos.refresh`.
+    let discovery_handle = tokio::spawn(discovery::run(Arc::clone(&store)));
 
     let address = local_api_address(&data_dir);
     let serve_result = tokio::select! {
@@ -195,6 +236,7 @@ async fn run() -> error::Result<()> {
     };
 
     poll_handle.abort();
+    discovery_handle.abort();
     serve_result
 }
 

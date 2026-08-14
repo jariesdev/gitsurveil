@@ -11,6 +11,7 @@
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "opener:default",
-    "positioner:default"
+    "positioner:default",
+    "dialog:default"
   ]
 }

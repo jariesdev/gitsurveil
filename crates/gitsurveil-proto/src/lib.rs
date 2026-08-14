@@ -12,6 +12,7 @@ mod conflict;
 mod item;
 mod pr;
 mod priority;
+mod repo;
 mod rpc;
 
 pub use conflict::{
@@ -23,4 +24,5 @@ pub use pr::{
     PullRequestSummary, ReviewDecision, ReviewThread, Reviewer,
 };
 pub use priority::{ScoredItem, Severity};
+pub use repo::{CloneState, CloneStatus, OrgRef, RepoCatalog, Repository};
 pub use rpc::{ErrorPayload, Request, Response, StatusResult};

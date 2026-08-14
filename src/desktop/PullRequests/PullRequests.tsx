@@ -18,14 +18,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { listPullRequests, listRepos, openUrl } from "../../ipc";
+import { listPullRequests, openUrl, reposList } from "../../ipc";
 import { ContextMenu } from "../ContextMenu";
 import type {
   AccountRef,
   PrRole,
   PrState,
   PullRequestSummary,
-  RepoConfig,
 } from "../../types";
 import { ConflictResolver } from "../ConflictResolver";
 import { age } from "../ItemRow";
@@ -72,8 +71,9 @@ export function PullRequests({
 }) {
   /** Fetched from the daemon; `null` until the first query lands. */
   const [rows, setRows] = useState<PullRequestSummary[] | null>(null);
-  /** Configured local clones (`repos.list`), used to gate conflict resolution. */
-  const [repos, setRepos] = useState<RepoConfig[]>([]);
+  /** Repos with a registered local clone (`repos.list`), used to gate
+   * conflict resolution. */
+  const [clonedRepos, setClonedRepos] = useState<string[]>([]);
   // Persisted, not plain state: switching sidebar views unmounts this
   // component and closing the window drops the webview, either of which would
   // otherwise reset the filters the user just set.
@@ -116,14 +116,14 @@ export function PullRequests({
     try {
       // Repos ride along so "Resolve conflicts" can tell, before opening the
       // resolver, whether a local clone exists for that repository.
-      const [fetched, configured] = await Promise.all([
+      const [fetched, catalog] = await Promise.all([
         listPullRequests({
           state: state === "" ? undefined : state,
         }),
-        listRepos(),
+        reposList(),
       ]);
       setRows(fetched);
-      setRepos(configured);
+      setClonedRepos(catalog.repos.filter((r) => r.tracked).map((r) => r.full_name));
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -155,7 +155,7 @@ export function PullRequests({
    * The resolver needs a configured local clone; without one, explain why
    * instead of failing obscurely, with a path to the Repositories tab. */
   function handleResolve(repo: string, number: number) {
-    if (repos.some((r) => r.repo === repo)) {
+    if (clonedRepos.includes(repo)) {
       setResolving({ repo, number });
     } else {
       setNoClone({ repo, number });
