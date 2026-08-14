@@ -32,11 +32,14 @@ import { age } from "../ItemRow";
 import { PrDetail } from "../PrDetail";
 import {
   applyPrFilters,
+  hasActivePrFilters,
   NO_PR_FILTERS,
+  revivePrFilters,
   sortByRecent,
   type Attention,
   type PullRequestFilters,
 } from "./filters";
+import { usePersistentState } from "../usePersistentState";
 
 const ROLE_LABELS: Record<PrRole, string> = {
   authored: "Authored",
@@ -71,8 +74,22 @@ export function PullRequests({
   const [rows, setRows] = useState<PullRequestSummary[] | null>(null);
   /** Configured local clones (`repos.list`), used to gate conflict resolution. */
   const [repos, setRepos] = useState<RepoConfig[]>([]);
-  const [status, setStatus] = useState<PrState | "">("open");
-  const [filters, setFilters] = useState<PullRequestFilters>(NO_PR_FILTERS);
+  // Persisted, not plain state: switching sidebar views unmounts this
+  // component and closing the window drops the webview, either of which would
+  // otherwise reset the filters the user just set.
+  const [status, setStatus] = usePersistentState<PrState | "">(
+    "pr.status",
+    "open",
+    (stored, fallback) =>
+      ["open", "closed", "merged", ""].includes(stored as string)
+        ? (stored as PrState | "")
+        : fallback,
+  );
+  const [filters, setFilters] = usePersistentState<PullRequestFilters>(
+    "pr.filters",
+    NO_PR_FILTERS,
+    (stored) => revivePrFilters(stored, accounts.map((a) => a.id)),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** The PR whose detail pane is open, if any. */
@@ -326,9 +343,27 @@ export function PullRequests({
           )}
         </div>
 
-        {hiddenCount > 0 && (
-          <footer className="border-t border-neutral-200 px-4 py-1.5 text-[11px] text-neutral-500 dark:border-neutral-800">
-            {hiddenCount} pull request{hiddenCount === 1 ? "" : "s"} hidden by filters
+        {/* Shown whenever anything is constraining the list, not only when
+            rows were hidden: with an empty result and active filters, nothing
+            is "hidden" yet the filters are still the reason the pane is
+            empty. */}
+        {(hiddenCount > 0 || hasActivePrFilters(filters)) && (
+          <footer className="flex items-center gap-2 border-t border-neutral-200 px-4 py-1.5 text-[11px] text-neutral-500 dark:border-neutral-800">
+            <span>
+              {hiddenCount > 0
+                ? `${hiddenCount} pull request${hiddenCount === 1 ? "" : "s"} hidden by filters`
+                : "Filters are active"}
+            </span>
+            {/* Filters now survive closing the window, so a user can return to
+                a short list days later having forgotten why. This is the way
+                back. */}
+            <button
+              type="button"
+              onClick={() => setFilters(NO_PR_FILTERS)}
+              className="underline underline-offset-2"
+            >
+              Clear filters
+            </button>
           </footer>
         )}
 

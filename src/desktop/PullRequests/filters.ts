@@ -89,3 +89,47 @@ export function sortByRecent(
 ): PullRequestSummary[] {
   return [...summaries].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 }
+
+/**
+ * Rebuilds a stored filter set into a usable one.
+ *
+ * Restoring blindly is a trap: a filter naming an account you have since
+ * removed would hide every row with nothing on screen explaining why. Unknown
+ * fields are dropped, and an `accountId` that no longer exists is cleared —
+ * the remaining dimensions stay visible in their dropdowns, so a filter that
+ * happens to match nothing is still self-evident.
+ */
+export function revivePrFilters(
+  stored: unknown,
+  knownAccountIds: string[],
+): PullRequestFilters {
+  if (typeof stored !== "object" || stored === null) return NO_PR_FILTERS;
+  const raw = stored as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+
+  const accountId = str(raw.accountId);
+  return {
+    search: str(raw.search),
+    accountId: knownAccountIds.includes(accountId) ? accountId : "",
+    repo: str(raw.repo),
+    role: (["authored", "review_requested", "assigned"].includes(str(raw.role))
+      ? raw.role
+      : "") as PullRequestFilters["role"],
+    attention: (["draft", "conflicted", "ci_failing", "approved"].includes(
+      str(raw.attention),
+    )
+      ? raw.attention
+      : "") as PullRequestFilters["attention"],
+  };
+}
+
+/** Whether any dimension is constraining the list. */
+export function hasActivePrFilters(filters: PullRequestFilters): boolean {
+  return (
+    filters.search !== "" ||
+    filters.accountId !== "" ||
+    filters.repo !== "" ||
+    filters.role !== "" ||
+    filters.attention !== ""
+  );
+}
