@@ -4,11 +4,11 @@
 //! tray icon and the popover window. All state lives in the daemon, which
 //! keeps polling and notifying whether or not this process is running.
 //!
-//! The defining constraint is idle footprint: the popover webview is
-//! **destroyed** when it closes and rebuilt when the tray is clicked, so an
-//! idle menubar app costs a tray icon and nothing else. Everything here is
-//! written to preserve that — notably, no long-lived webview and no state
-//! cached on the JS side that would need one.
+//! The defining constraint is idle footprint. The popover webview is
+//! **hidden** (not destroyed) between uses so a tray click shows it instantly,
+//! and a background task in `popover` destroys it once it has sat hidden past
+//! an idle timeout — an abandoned popover eventually costs nothing again, and
+//! a frequently used one never pays the recreate cost.
 
 // Hides the console window that would otherwise appear alongside the GUI on
 // Windows release builds.
@@ -16,6 +16,7 @@
 #![warn(missing_docs)]
 
 mod daemon;
+mod popover;
 mod tray;
 
 use tauri::{
@@ -23,10 +24,6 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WebviewUrl, WebviewWindowBuilder,
 };
-
-/// Label of the popover window. Used to find (or confirm the absence of) the
-/// window on every tray click.
-const POPOVER_LABEL: &str = "popover";
 
 /// Id of the tray icon, so the severity watcher can find it to recolor.
 const TRAY_ID: &str = "main";
@@ -38,11 +35,6 @@ const MAIN_LABEL: &str = "main";
 /// without assuming a large display.
 const MAIN_WIDTH: f64 = 1000.0;
 const MAIN_HEIGHT: f64 = 680.0;
-
-/// Popover dimensions. Sized for a scannable list without becoming a second
-/// main window — the full UI is a separate surface (`specs/desktop-ui.md`).
-const POPOVER_WIDTH: f64 = 400.0;
-const POPOVER_HEIGHT: f64 = 520.0;
 
 fn main() {
     tauri::Builder::default()
@@ -70,6 +62,9 @@ fn main() {
             commands::repos_refresh,
             commands::repos_clone,
             commands::repos_clone_status,
+            commands::repos_worktrees,
+            commands::repos_worktree_add,
+            commands::repos_worktree_remove,
             commands::poll_now,
             commands::pr_detail,
             commands::pr_create,
@@ -83,6 +78,10 @@ fn main() {
             commands::pr_branches,
             commands::pr_labels,
             commands::prs_list,
+            commands::apps_list,
+            commands::apps_add,
+            commands::apps_remove,
+            commands::apps_open,
             commands::conflict_prepare,
             commands::conflict_file,
             commands::conflict_save,
@@ -101,15 +100,18 @@ fn main() {
             build_tray(app.handle())?;
             // Keeps the tray color current with no popover open.
             tray::spawn_severity_watcher(app.handle().clone());
+            // Idle-clock + teardown for the hidden-but-warm popover: hide/show
+            // is cheap, but a popover nobody clicks must give its webview back.
+            app.manage(popover::IdleClock::default());
+            popover::spawn_idle_teardown(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("failed to build the gitsurveil app")
         .run(|_app, event| {
             // Keep the process alive when the last window closes. Without
-            // this, destroying the popover would quit the app and take the
-            // tray icon with it — but destroying that window is exactly how
-            // the idle-footprint budget is met.
+            // this, destroying the popover (the idle-teardown path) would quit
+            // the app and take the tray icon with it.
             //
             // `code` distinguishes the two ways an exit is requested: `None`
             // means the windows went away, `Some` means something called
@@ -155,60 +157,10 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
-                let _ = toggle_popover(tray.app_handle());
+                let _ = popover::toggle(tray.app_handle());
             }
         })
         .build(app)?;
-    Ok(())
-}
-
-/// Opens the popover, or closes it if it's already open.
-///
-/// "Close" here means [`tauri::WebviewWindow::close`], which **destroys** the
-/// window and its webview rather than hiding it. That is deliberate and is the
-/// single most important line in this file for the memory budget: a hidden
-/// webview keeps its renderer process alive, a destroyed one does not.
-fn toggle_popover(app: &tauri::AppHandle) -> tauri::Result<()> {
-    if let Some(existing) = app.get_webview_window(POPOVER_LABEL) {
-        existing.close()?;
-        return Ok(());
-    }
-
-    let popover = WebviewWindowBuilder::new(app, POPOVER_LABEL, WebviewUrl::default())
-        .title("gitsurveil")
-        .inner_size(POPOVER_WIDTH, POPOVER_HEIGHT)
-        .resizable(false)
-        .decorations(false)
-        .always_on_top(true)
-        // Keep the popover out of the dock/taskbar and app switcher: it's a
-        // menubar surface, not a window users alt-tab to.
-        .skip_taskbar(true)
-        .visible(false)
-        .build()?;
-
-    // Belt and braces on the frameless look: the builder flag alone has been
-    // observed to leave a title bar on macOS, so assert it on the built window
-    // too. A menubar popover with window chrome looks like a stray dialog.
-    popover.set_decorations(false)?;
-
-    use tauri_plugin_positioner::{Position, WindowExt};
-    // TrayCenter needs the tray position captured by `on_tray_event` above.
-    popover.move_window(Position::TrayCenter).ok();
-    popover.show()?;
-    popover.set_focus()?;
-
-    // Dismiss-on-blur, the expected behavior for a menubar popover. Also the
-    // main path by which the webview gets destroyed, so it directly serves
-    // the idle-footprint budget.
-    let handle = app.clone();
-    popover.on_window_event(move |event| {
-        if let tauri::WindowEvent::Focused(false) = event {
-            if let Some(window) = handle.get_webview_window(POPOVER_LABEL) {
-                let _ = window.close();
-            }
-        }
-    });
-
     Ok(())
 }
 
@@ -277,7 +229,7 @@ mod commands {
         crate::daemon::status().await.map_err(|e| e.to_string())
     }
 
-    /// Opens `url` in the user's browser, then closes the popover — clicking
+    /// Opens `url` in the user's browser, then hides the popover — clicking
     /// an item should get you to GitHub and leave no window behind.
     #[tauri::command]
     pub async fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
@@ -288,17 +240,16 @@ mod commands {
         close_popover(app).await
     }
 
-    /// Closes (and destroys) the popover window.
+    /// Dismisses the popover: hides it (webview stays warm for the next tray
+    /// click) rather than destroying it. The idle teardown in `popover`
+    /// reclaims it if the user never comes back.
     #[tauri::command]
     pub async fn close_popover(app: tauri::AppHandle) -> Result<(), String> {
-        use tauri::Manager;
-        if let Some(window) = app.get_webview_window(crate::POPOVER_LABEL) {
-            window.close().map_err(|e| e.to_string())?;
-        }
+        crate::popover::hide(&app);
         Ok(())
     }
 
-    /// Opens the full desktop window, and closes the popover behind it.
+    /// Opens the full desktop window, and hides the popover behind it.
     #[tauri::command]
     pub async fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
         crate::open_main(&app).map_err(|e| e.to_string())?;
@@ -412,6 +363,32 @@ mod commands {
     #[tauri::command]
     pub async fn repos_clone_status(job_id: String) -> Result<Option<gitsurveil_proto::CloneStatus>, String> {
         crate::daemon::repos_clone_status(&job_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// A repo's user-created worktrees plus the branches a new one can use.
+    #[tauri::command]
+    pub async fn repos_worktrees(repo: String) -> Result<gitsurveil_proto::WorktreesResult, String> {
+        crate::daemon::repos_worktrees(&repo).await.map_err(|e| e.to_string())
+    }
+
+    /// Creates a worktree for `branch` at `path`; `branch` may be new.
+    #[tauri::command]
+    pub async fn repos_worktree_add(
+        repo: String,
+        branch: String,
+        path: String,
+    ) -> Result<gitsurveil_proto::WorktreeInfo, String> {
+        crate::daemon::repos_worktree_add(&repo, &branch, &path)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Removes a worktree (keeping its branch); refuses dirty worktrees.
+    #[tauri::command]
+    pub async fn repos_worktree_remove(repo: String, name: String) -> Result<(), String> {
+        crate::daemon::repos_worktree_remove(&repo, &name)
             .await
             .map_err(|e| e.to_string())
     }
@@ -596,6 +573,38 @@ mod commands {
         )
         .await
         .map_err(|e| e.to_string())
+    }
+
+    // ---- registered apps (`specs/desktop-ui.md`) ------------------------
+    //
+    // The "Open with" apps for worktree context menus. The daemon stores the
+    // registry and does the actual process spawn; these just forward.
+
+    /// Lists the registered "Open with" applications, sorted by display name.
+    #[tauri::command]
+    pub async fn apps_list() -> Result<Vec<gitsurveil_proto::RegisteredApp>, String> {
+        crate::daemon::apps_list().await.map_err(|e| e.to_string())
+    }
+
+    /// Registers an application (`name` shown in the menu, `command` is the
+    /// bare executable on `PATH`).
+    #[tauri::command]
+    pub async fn apps_add(name: String, command: String) -> Result<gitsurveil_proto::RegisteredApp, String> {
+        crate::daemon::apps_add(&name, &command).await.map_err(|e| e.to_string())
+    }
+
+    /// Forgets a registered application; idempotent.
+    #[tauri::command]
+    pub async fn apps_remove(command: String) -> Result<(), String> {
+        crate::daemon::apps_remove(&command).await.map_err(|e| e.to_string())
+    }
+
+    /// Opens `path` with a registered application. The daemon spawns
+    /// `command <path>` (never through a shell) and errors if the app is not
+    /// installed or registered.
+    #[tauri::command]
+    pub async fn apps_open(command: String, path: String) -> Result<(), String> {
+        crate::daemon::apps_open(&command, &path).await.map_err(|e| e.to_string())
     }
 
     // ---- conflict resolution (`specs/conflict-resolver.md`) --------------

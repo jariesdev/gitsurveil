@@ -8,6 +8,7 @@
 
 #![warn(missing_docs)]
 
+mod apps;
 mod conflict;
 mod item;
 mod pr;
@@ -15,6 +16,7 @@ mod priority;
 mod repo;
 mod rpc;
 
+pub use apps::RegisteredApp;
 pub use conflict::{
     ConflictFile, ConflictFileSummary, ConflictHunk, ConflictSegment, ConflictSession,
 };
@@ -24,5 +26,5 @@ pub use pr::{
     PullRequestSummary, ReviewDecision, ReviewThread, Reviewer,
 };
 pub use priority::{ScoredItem, Severity};
-pub use repo::{CloneState, CloneStatus, OrgRef, RepoCatalog, Repository};
+pub use repo::{CloneState, CloneStatus, OrgRef, RepoCatalog, Repository, WorktreeInfo, WorktreesResult};
 pub use rpc::{ErrorPayload, Request, Response, StatusResult};

@@ -6,16 +6,35 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { Repos } from "./Repos";
-import { reposClone, reposCloneStatus, reposSet } from "../ipc";
-import type { AccountRef, CloneStatus, RepoCatalog, Repository } from "../types";
+import {
+  appsList,
+  appsOpen,
+  reposClone,
+  reposCloneStatus,
+  reposSet,
+  reposWorktreeAdd,
+  reposWorktreeRemove,
+  reposWorktrees,
+} from "../ipc";import type {
+  AccountRef,
+  CloneStatus,
+  RepoCatalog,
+  Repository,
+  WorktreesResult,
+} from "../types";
 
 vi.mock("../ipc", () => ({
+  appsList: vi.fn().mockResolvedValue([]),
+  appsOpen: vi.fn(),
   openUrl: vi.fn(),
   reposClone: vi.fn(),
   reposCloneStatus: vi.fn(),
   reposRefresh: vi.fn(),
   reposRemove: vi.fn(),
   reposSet: vi.fn(),
+  reposWorktreeAdd: vi.fn(),
+  reposWorktreeRemove: vi.fn(),
+  reposWorktrees: vi.fn(),
 }));
 
 const dialog = vi.hoisted(() => ({ open: vi.fn() }));
@@ -160,5 +179,122 @@ describe("Repos", () => {
     };
     render(<Repos catalog={realCatalog} accounts={[account]} onChange={() => {}} />);
     expect(screen.getAllByText(/villasplatform/)).toHaveLength(1);
+  });
+
+  it("expands a tracked repo to lazy-load and list its worktrees", async () => {
+    const worktrees: WorktreesResult = {
+      worktrees: [
+        { name: "wt-acme-api-feature", path: "/tmp/acme/api/wt-feature", branch: "feature", head: "abc1234" },
+      ],
+      branches: ["main", "feature"],
+    };
+    vi.mocked(reposWorktrees).mockResolvedValue(worktrees);
+    render(<Repos catalog={catalog} accounts={[account]} onChange={() => {}} />);
+
+    expect(reposWorktrees).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees for acme/web" }));
+
+    await waitFor(() => expect(reposWorktrees).toHaveBeenCalledWith("acme/web"));
+    expect(await screen.findByText("feature")).toBeTruthy();
+    expect(screen.getByText(/wt-feature/)).toBeTruthy();
+    // An untracked repo has no clone and therefore no expand affordance.
+    expect(
+      screen.queryByRole("button", { name: "Worktrees for acme/api" }),
+    ).toBeNull();
+  });
+
+  it("adds a worktree with the branch/relative path and reloads the catalog", async () => {
+    vi.mocked(reposWorktrees).mockResolvedValue({ worktrees: [], branches: ["main", "feature"] });
+    const onChange = vi.fn();
+    render(<Repos catalog={catalog} accounts={[account]} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees for acme/web" }));
+    await screen.findByText("No worktrees yet.");
+
+    fireEvent.change(screen.getByLabelText("Branch for new acme/web worktree"), {
+      target: { value: "feature" },
+    });
+    // The path auto-derives as `wt-{owner}-{name}-{branch}` next to the clone.
+    expect(
+      (screen.getByLabelText("Path for new acme/web worktree") as HTMLInputElement).value,
+    ).toBe("/tmp/acme/wt-acme-web-feature");
+    fireEvent.submit(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() =>
+      expect(reposWorktreeAdd).toHaveBeenCalledWith(
+        "acme/web",
+        "feature",
+        "/tmp/acme/wt-acme-web-feature",
+      ),
+    );
+    expect(onChange).toHaveBeenCalled();
+    // The branch field resets for the next worktree; the path returns to the
+    // default for an empty branch.
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText("Branch for new acme/web worktree") as HTMLInputElement).value,
+      ).toBe(""),
+    );
+    expect(
+      (screen.getByLabelText("Path for new acme/web worktree") as HTMLInputElement).value,
+    ).toBe("/tmp/acme/wt-acme-web-work");
+  });
+
+  it("deletes a worktree from its row's context menu and reloads the catalog", async () => {
+    const worktrees: WorktreesResult = {
+      worktrees: [
+        { name: "wt-acme-web-feature", path: "/tmp/acme/web/wt-feature", branch: "feature", head: "abc1234" },
+      ],
+      branches: ["main", "feature"],
+    };
+    // First call renders the list; the delete triggers a reload that returns
+    // the list without the removed worktree.
+    vi.mocked(reposWorktrees)
+      .mockResolvedValueOnce(worktrees)
+      .mockResolvedValueOnce({ worktrees: [], branches: ["main", "feature"] });
+    const onChange = vi.fn();
+    render(<Repos catalog={catalog} accounts={[account]} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees for acme/web" }));
+    await screen.findByText("feature");
+
+    fireEvent.contextMenu(screen.getByText(/wt-feature/));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete worktree" }));
+
+    await waitFor(() =>
+      expect(reposWorktreeRemove).toHaveBeenCalledWith("acme/web", "wt-acme-web-feature"),
+    );
+    expect(onChange).toHaveBeenCalled();
+    // The deleted row is removed from the list in place.
+    await waitFor(() =>
+      expect(screen.queryByText(/wt-feature/)).toBeNull(),
+    );
+    expect(screen.getByText("No worktrees yet.")).toBeTruthy();
+  });
+
+  it("opens a worktree with a registered app via the submenu", async () => {
+    vi.mocked(appsList).mockResolvedValue([
+      { name: "VS Code", command: "code" },
+    ]);
+    const worktrees: WorktreesResult = {
+      worktrees: [
+        { name: "wt-acme-web-feature", path: "/tmp/acme/web/wt-feature", branch: "feature", head: "abc1234" },
+      ],
+      branches: ["main", "feature"],
+    };
+    vi.mocked(reposWorktrees).mockResolvedValue(worktrees);
+    render(<Repos catalog={catalog} accounts={[account]} onChange={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees for acme/web" }));
+    await screen.findByText("feature");
+
+    fireEvent.contextMenu(screen.getByText(/wt-feature/));
+    const openWith = screen.getByRole("menuitem", { name: "Open with" });
+    // The submenu is closed until hovered.
+    expect(screen.queryByRole("menuitem", { name: "VS Code" })).toBeNull();
+    fireEvent.mouseOver(openWith);
+    fireEvent.click(screen.getByRole("menuitem", { name: "VS Code" }));
+
+    await waitFor(() =>
+      expect(appsOpen).toHaveBeenCalledWith("code", "/tmp/acme/web/wt-feature"),
+    );
   });
 });

@@ -13,13 +13,13 @@ import { App } from "./desktop/App";
 import { Popover } from "./Popover";
 import "./styles.css";
 
-// Suppress the webview's native context menu ("Reload", "Back", …). It exposes
-// browser affordances that make no sense in a desktop app and can navigate the
-// window somewhere it can't recover from. Kept in dev, where inspecting the
-// page is useful.
-if (!import.meta.env.DEV) {
-  document.addEventListener("contextmenu", (event) => event.preventDefault());
-}
+// Suppress the webview's native context menu ("Reload", "Inspect Element",
+// …). It exposes browser affordances that make no sense in a desktop app and
+// can navigate the window somewhere it can't recover from. Applies in dev
+// too; the custom context menus rendered by the app's own `ContextMenu`
+// component are unaffected (they listen for the same event and render their
+// own menu).
+document.addEventListener("contextmenu", (event) => event.preventDefault());
 
 const isMainWindow = window.location.hash === "#main";
 

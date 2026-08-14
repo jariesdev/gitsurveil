@@ -91,6 +91,40 @@ pub enum CloneState {
     Failed,
 }
 
+/// One worktree registered in a repo's git metadata (`repos.worktrees`).
+///
+/// Derived from the clone on every request — the daemon keeps no table for
+/// these, so worktrees created or removed outside gitsurveil (git CLI, IDEs)
+/// show up too. Conflict-session worktrees (named `gitsurveil-*`) are filtered
+/// out before this is served: they're transient, pruned at daemon startup, and
+/// the UI must never offer to delete one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeInfo {
+    /// The worktree's registered name — the key `git worktree list` uses.
+    pub name: String,
+    /// Absolute path of the worktree's working directory.
+    pub path: String,
+    /// The checked-out branch shorthand (e.g. `feature/x`), or
+    /// `"(detached)"` when the worktree's HEAD is detached.
+    pub branch: String,
+    /// Short commit id of the worktree's HEAD.
+    pub head: String,
+}
+
+/// Everything the Repositories pane needs to render one repo's worktrees:
+/// the worktree list itself plus the branches a new worktree can be created
+/// from (`repos.worktrees`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreesResult {
+    /// The repo's user-created worktrees, in git registration order.
+    pub worktrees: Vec<WorktreeInfo>,
+    /// Branch shortnames a new worktree can check out: every local branch,
+    /// plus remote-tracking branches (`origin/x`) that don't shadow a local
+    /// one. The UI offers these in the add-worktree combobox; a name typed
+    /// beyond them is created fresh in the new worktree.
+    pub branches: Vec<String>,
+}
+
 /// Status of one `repos.clone` background job, polled by the UI.
 ///
 /// Progress is byte-based: git reports how many bytes of the pack have arrived.

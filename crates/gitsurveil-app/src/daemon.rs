@@ -9,7 +9,8 @@
 use std::path::PathBuf;
 
 use gitsurveil_proto::{
-    AccountRef, CloneStatus, RepoCatalog, Repository, Request, Response, ScoredItem, StatusResult,
+    AccountRef, CloneStatus, RegisteredApp, RepoCatalog, Repository, Request, Response,
+    ScoredItem, StatusResult, WorktreeInfo, WorktreesResult,
 };
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -221,9 +222,63 @@ pub async fn repos_clone_status(job_id: &str) -> Result<Option<CloneStatus>> {
     call("repos.clone_status", serde_json::json!({ "job_id": job_id })).await
 }
 
+/// A repo's user-created worktrees plus the branches a new one can be created
+/// from (`specs/desktop-ui.md`). Derived from the clone's git metadata on each
+/// call, so worktrees made outside gitsurveil show up too.
+pub async fn repos_worktrees(repo: &str) -> Result<WorktreesResult> {
+    call("repos.worktrees", serde_json::json!({ "repo": repo })).await
+}
+
+/// Creates a worktree for `branch` at `path` and returns its info. `branch`
+/// may be an existing local/remote branch or a brand-new name; `path` may be
+/// relative to the clone's parent. Errors if the target is non-empty or the
+/// branch is checked out elsewhere — nothing pre-existing is ever touched.
+pub async fn repos_worktree_add(repo: &str, branch: &str, path: &str) -> Result<WorktreeInfo> {
+    call(
+        "repos.worktree_add",
+        serde_json::json!({ "repo": repo, "branch": branch, "path": path }),
+    )
+    .await
+}
+
+/// Removes a worktree (unregisters it and deletes its working directory),
+/// keeping the checked-out branch. Refuses dirty worktrees and conflict
+/// sessions.
+pub async fn repos_worktree_remove(repo: &str, name: &str) -> Result<()> {
+    let _: serde_json::Value =
+        call("repos.worktree_remove", serde_json::json!({ "repo": repo, "name": name })).await?;
+    Ok(())
+}
+
 /// Asks the daemon to poll now rather than waiting for the next cycle.
 pub async fn poll_now() -> Result<()> {
     let _: serde_json::Value = call("poll.now", serde_json::Value::Null).await?;
+    Ok(())
+}
+
+/// Lists the registered "Open with" applications (`specs/desktop-ui.md`),
+/// sorted by display name.
+pub async fn apps_list() -> Result<Vec<RegisteredApp>> {
+    call("apps.list", serde_json::Value::Null).await
+}
+
+/// Registers an application for the worktree "Open with" menu. `command` is a
+/// bare executable name on `PATH`; the daemon rejects anything else.
+pub async fn apps_add(name: &str, command: &str) -> Result<RegisteredApp> {
+    call("apps.add", serde_json::json!({ "name": name, "command": command })).await
+}
+
+/// Forgets a registered application; idempotent.
+pub async fn apps_remove(command: &str) -> Result<()> {
+    let _: serde_json::Value = call("apps.remove", serde_json::json!({ "command": command })).await?;
+    Ok(())
+}
+
+/// Opens `path` with a registered application (`apps.open`). The daemon
+/// validates the app is registered and launches `command <path>` — no shell.
+pub async fn apps_open(command: &str, path: &str) -> Result<()> {
+    let _: serde_json::Value =
+        call("apps.open", serde_json::json!({ "command": command, "path": path })).await?;
     Ok(())
 }
 

@@ -1,10 +1,11 @@
 //! SQLite state store (`specs/daemon.md`). Owns `accounts`, `items`, the
 //! per-endpoint `etags` cache used to make no-change polls nearly free
-//! (`specs/github-integration.md`), and the `repositories`/`clone_jobs`
-//! tables behind the Repositories pane and new-repo detection
-//! (`specs/desktop-ui.md`). `history`/`ai_reports` tables are added in the
-//! phases that use them rather than declared here unused — schema grows with
-//! the feature that needs it.
+//! (`specs/github-integration.md`), the `repositories`/`clone_jobs` tables
+//! behind the Repositories pane and new-repo detection
+//! (`specs/desktop-ui.md`), and the `apps` table behind the "Open with"
+//! worktree menu (`specs/desktop-ui.md`). `history`/`ai_reports` tables are
+//! added in the phases that use them rather than declared here unused —
+//! schema grows with the feature that needs it.
 //!
 //! A single [`Store`] wraps one `rusqlite::Connection` behind a `Mutex`
 //! (SQLite serializes writers anyway; this avoids a connection pool for a
@@ -15,7 +16,7 @@ use std::sync::Mutex;
 
 use gitsurveil_proto::{
     AccountRef, ActionItem, AuthKind, CiStatus, CloneStatus, ItemKind, ItemState, OrgRef,
-    RepoCatalog, Repository,
+    RegisteredApp, RepoCatalog, Repository,
 };
 use rusqlite::{params, Connection};
 
@@ -126,6 +127,11 @@ impl Store {
                 error       TEXT,
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS apps (
+                name       TEXT NOT NULL,
+                command    TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
             );
             ",
         )?;
@@ -748,6 +754,54 @@ impl Store {
         conn.execute("DELETE FROM clone_jobs WHERE id = ?1", params![job_id])?;
         Ok(())
     }
+
+    // ---- apps ------------------------------------------------------------
+
+    /// Every registered "Open with" application, by display name — `apps.list`.
+    pub fn list_apps(&self) -> Result<Vec<RegisteredApp>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT name, command FROM apps ORDER BY name COLLATE NOCASE")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(RegisteredApp {
+                name: row.get(0)?,
+                command: row.get(1)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Whether `command` is registered — the gate `apps.open` checks before
+    /// launching anything.
+    pub fn app_registered(&self, command: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM apps WHERE command = ?1", params![command],
+                |row| row.get(0))?;
+        Ok(count > 0)
+    }
+
+    /// Registers an app. Returns `false` when the command is already
+    /// registered (the caller reports that as a conflict). The daemon only
+    /// ever runs `command` from an `apps` row, so the stored command is what
+    /// gets launched; a duplicate would be two display names for the same
+    /// executable, which is never useful.
+    pub fn add_app(&self, app: &RegisteredApp, now: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let inserted = conn.execute(
+            "INSERT OR IGNORE INTO apps (name, command, created_at) VALUES (?1, ?2, ?3)",
+            params![app.name, app.command, now],
+        )?;
+        Ok(inserted == 1)
+    }
+
+    /// Removes a registered app. Idempotent; `false` when it wasn't there.
+    pub fn remove_app(&self, command: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let removed = conn.execute("DELETE FROM apps WHERE command = ?1", params![command])?;
+        Ok(removed == 1)
+    }
 }
 
 fn row_to_repository(row: &rusqlite::Row) -> rusqlite::Result<Repository> {
@@ -1122,5 +1176,36 @@ mod tests {
             0
         );
         assert!(store.find_repo("acc-1", "acme/other").unwrap().is_none());
+    }
+
+    #[test]
+    fn apps_round_trip_and_duplicate_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        let code = RegisteredApp {
+            name: "VS Code".into(),
+            command: "code".into(),
+        };
+        assert!(store.add_app(&code, "t0").unwrap());
+        // Same command under another name is rejected — the command is the key.
+        assert!(!store
+            .add_app(&RegisteredApp { name: "Code".into(), command: "code".into() }, "t1")
+            .unwrap());
+
+        store
+            .add_app(&RegisteredApp { name: "Sublime Merge".into(), command: "smerge".into() }, "t2")
+            .unwrap();
+        assert_eq!(
+            store.list_apps().unwrap(),
+            vec![
+                RegisteredApp { name: "Sublime Merge".into(), command: "smerge".into() },
+                RegisteredApp { name: "VS Code".into(), command: "code".into() },
+            ]
+        );
+        assert!(store.app_registered("code").unwrap());
+        assert!(!store.app_registered("vim").unwrap());
+
+        assert!(store.remove_app("code").unwrap());
+        assert!(!store.remove_app("code").unwrap()); // idempotent
+        assert_eq!(store.list_apps().unwrap().len(), 1);
     }
 }

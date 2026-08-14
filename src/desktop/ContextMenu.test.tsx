@@ -77,4 +77,49 @@ describe("ContextMenu", () => {
     // And actually moved off the requested position, not just "some number".
     expect(parseInt(menu.style.left, 10)).toBeLessThan(5000);
   });
+
+  it("opens a hover submenu and runs the child's action", () => {
+    const onOpenChild = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ContextMenu
+        x={100}
+        y={100}
+        onClose={onClose}
+        items={[
+          {
+            label: "Open with",
+            children: [{ label: "VS Code", onSelect: onOpenChild }],
+          },
+          { label: "Delete worktree", onSelect: vi.fn() },
+        ]}
+      />,
+    );
+    const parent = screen.getByRole("menuitem", { name: "Open with" });
+    // Closed until hovered; the sibling is a plain item either way.
+    expect(screen.queryByRole("menuitem", { name: "VS Code" })).toBeNull();
+    expect(
+      screen.getByRole("menuitem", { name: "Delete worktree" }),
+    ).toBeInTheDocument();
+
+    // React's onMouseEnter is driven by native mouseover, not mouseenter.
+    fireEvent.mouseOver(parent);
+    const child = screen.getByRole("menuitem", { name: "VS Code" });
+    fireEvent.click(child);
+    expect(onOpenChild).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the submenu closed when a parent has an onSelect instead", () => {
+    render(
+      <ContextMenu
+        x={100}
+        y={100}
+        onClose={vi.fn()}
+        items={[{ label: "Open in browser", onSelect: vi.fn() }]}
+      />,
+    );
+    fireEvent.mouseOver(screen.getByRole("menuitem", { name: "Open in browser" }));
+    // A leaf item never renders a submenu.
+    expect(screen.getAllByRole("menuitem")).toHaveLength(1);
+  });
 });

@@ -13,17 +13,30 @@
  * repo) and records the mapping in the daemon's catalog.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { open as pickDirectory } from "@tauri-apps/plugin-dialog";
 import {
+  appsList,
+  appsOpen,
   openUrl,
   reposClone,
   reposCloneStatus,
   reposRefresh,
   reposRemove,
   reposSet,
+  reposWorktreeAdd,
+  reposWorktreeRemove,
+  reposWorktrees,
 } from "../ipc";
-import type { AccountRef, CloneStatus, RepoCatalog, Repository } from "../types";
+import type {
+  AccountRef,
+  CloneStatus,
+  RegisteredApp,
+  RepoCatalog,
+  Repository,
+  WorktreeInfo,
+  WorktreesResult,
+} from "../types";
 import { ContextMenu } from "./ContextMenu";
 import {
   applyRepoFilters,
@@ -65,8 +78,27 @@ export function Repos({
   );
   const [jobs, setJobs] = useState<Record<string, ActiveJob>>({});
   const [menu, setMenu] = useState<{ repo: Repository; x: number; y: number } | null>(null);
+  const [wtMenu, setWtMenu] = useState<{
+    repo: Repository;
+    worktree: WorktreeInfo;
+    x: number;
+    y: number;
+  } | null>(null);
+  // Repos whose worktree section is open. Only tracked, cloned repos can
+  // expand. Kept as a Set so the same repo toggles cleanly across reloads.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The registered "Open with…" apps. Fetched on mount: this pane remounts on
+  // every navigation (`ViewErrorBoundary` is keyed by view), so it stays fresh
+  // without burdening the window-wide load with rows only this pane uses.
+  const [apps, setApps] = useState<RegisteredApp[]>([]);
+
+  useEffect(() => {
+    appsList()
+      .then(setApps)
+      .catch(() => setApps([]));
+  }, []);
 
   const refresh = useCallback(async () => {
     setBusy(true);
@@ -144,6 +176,46 @@ export function Repos({
     },
     [onChange],
   );
+
+  /** Removes one worktree of a repo; the branch itself survives. */
+  const handleWorktreeDelete = useCallback(
+    async (repo: Repository, worktree: WorktreeInfo) => {
+      setError(null);
+      try {
+        await reposWorktreeRemove(repo.full_name, worktree.name);
+        // The worktree list is owned by the expanded `WorktreesSection`, so
+        // refresh it in place — otherwise the deleted row lingers until the
+        // section is collapsed and re-expanded.
+        worktreeReloads.current.get(repo.full_name)?.();
+        onChange();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [onChange],
+  );
+
+  // Each expanded `WorktreesSection` registers its reload here so the parent
+  // can refresh the list after a delete it triggered via the context menu.
+  const worktreeReloads = useRef(new Map<string, () => void>());
+  const registerWorktreeReload = useCallback((fullName: string, reload: () => void) => {
+    worktreeReloads.current.set(fullName, reload);
+    return () => {
+      worktreeReloads.current.delete(fullName);
+    };
+  }, []);
+
+  const toggleExpanded = useCallback((fullName: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(fullName)) {
+        next.delete(fullName);
+      } else {
+        next.add(fullName);
+      }
+      return next;
+    });
+  }, []);
 
   // Polls every running clone once a second and repaints the progress bars.
   // When a job finishes the catalog is reloaded so the row flips to tracked;
@@ -258,9 +330,16 @@ export function Repos({
                 repo={repo}
                 accounts={accounts}
                 job={Object.values(jobs).find((j) => j.repo === repo.full_name) ?? null}
+                expanded={expanded.has(repo.full_name)}
+                onToggle={() => toggleExpanded(repo.full_name)}
                 onMenu={(event) => setMenu({ repo, x: event.clientX, y: event.clientY })}
                 onClone={() => void handleClone(repo)}
                 onChangePath={() => void handleChangePath(repo)}
+                onCatalogChange={onChange}
+                onWorktreeMenu={(event, worktree) =>
+                  setWtMenu({ repo, worktree, x: event.clientX, y: event.clientY })
+                }
+                registerWorktreeReload={registerWorktreeReload}
               />
             ))}
           </ul>
@@ -333,6 +412,39 @@ export function Repos({
           ]}
         />
       )}
+
+      {wtMenu && (
+        <ContextMenu
+          x={wtMenu.x}
+          y={wtMenu.y}
+          onClose={() => setWtMenu(null)}
+          items={[
+            // The daemon spawns `command <path>`; the worktree path is passed
+            // through as-is. Only shown when at least one app is registered.
+            ...(apps.length > 0
+              ? [
+                  {
+                    label: "Open with",
+                    children: apps.map((app) => ({
+                      label: app.name,
+                      onSelect: () => {
+                        setWtMenu(null);
+                        void appsOpen(app.command, wtMenu.worktree.path);
+                      },
+                    })),
+                  },
+                ]
+              : []),
+            {
+              label: "Delete worktree",
+              onSelect: () => {
+                setWtMenu(null);
+                void handleWorktreeDelete(wtMenu.repo, wtMenu.worktree);
+              },
+            },
+          ]}
+        />
+      )}
     </div>
   );
 }
@@ -342,26 +454,53 @@ function RepoRow({
   repo,
   accounts,
   job,
+  expanded,
+  onToggle,
   onMenu,
   onClone,
   onChangePath,
+  onCatalogChange,
+  onWorktreeMenu,
+  registerWorktreeReload,
 }: {
   repo: Repository;
   accounts: AccountRef[];
   job: ActiveJob | null;
+  expanded: boolean;
+  onToggle: () => void;
   onMenu: (event: React.MouseEvent) => void;
   onClone: () => void;
   onChangePath: () => void;
+  onCatalogChange: () => void;
+  onWorktreeMenu: (event: React.MouseEvent, worktree: WorktreeInfo) => void;
+  registerWorktreeReload: (fullName: string, reload: () => void) => () => void;
 }) {
   // A job with no status yet was just started — treat it as running so the
   // indeterminate bar appears immediately rather than a beat later.
   const running = job !== null && (job.status === null || job.status.status === "running");
   const failed = job?.status?.status === "failed";
   const account = accounts.find((a) => a.id === repo.account_id);
+  // Worktrees live in the clone, so only a tracked repo with a registered
+  // path can expand.
+  const expandable = repo.tracked && repo.clone_path !== null;
 
   return (
     <li className="border-b border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50">
       <div className="flex items-center gap-3 px-4 py-2">
+        {expandable && (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={`Worktrees for ${repo.full_name}`}
+            onClick={onToggle}
+            className={`shrink-0 text-xs text-neutral-500 transition-transform ${
+              expanded ? "rotate-90" : ""
+            }`}
+          >
+            ▶
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => void openUrl(repo.url)}
@@ -402,6 +541,15 @@ function RepoRow({
         </button>
       </div>
 
+      {expanded && expandable && (
+        <WorktreesSection
+          repo={repo}
+          onChange={onCatalogChange}
+          onWorktreeMenu={onWorktreeMenu}
+          registerWorktreeReload={registerWorktreeReload}
+        />
+      )}
+
       {failed && (
         <div className="flex items-center gap-2 px-4 pb-2">
           <button
@@ -424,10 +572,170 @@ function RepoRow({
   );
 }
 
+/** The expanded worktree panel of a tracked, cloned repo: its user-created
+ * worktrees plus an inline "add" form. Data comes from `repos.worktrees` on
+ * every expand, so worktrees created or removed outside gitsurveil show up
+ * too. Deleting happens via the row's context menu; adding is this form. */
+function WorktreesSection({
+  repo,
+  onChange,
+  onWorktreeMenu,
+  registerWorktreeReload,
+}: {
+  repo: Repository;
+  /** Reloads the catalog after a successful add. */
+  onChange: () => void;
+  onWorktreeMenu: (event: React.MouseEvent, worktree: WorktreeInfo) => void;
+  /** Lets the parent refresh this list after a context-menu delete. */
+  registerWorktreeReload: (fullName: string, reload: () => void) => () => void;
+}) {
+  const [data, setData] = useState<WorktreesResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [branch, setBranch] = useState("");
+  const [path, setPath] = useState("");
+  // The path is prefilled from the branch and stays in sync until the user
+  // edits it by hand — after that their text wins.
+  const [pathTouched, setPathTouched] = useState(false);
+  const [adding, setAdding] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await reposWorktrees(repo.full_name));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [repo.full_name]);
+
+  useEffect(() => {
+    void load();
+    return registerWorktreeReload(repo.full_name, () => void load());
+  }, [load, registerWorktreeReload, repo.full_name]);
+
+  /** `wt-{owner}-{name}-{branch}` as a sibling of the clone. */
+  const defaultPath = useCallback(
+    (forBranch: string) => {
+      const safe = forBranch.trim().replace(/[/\\]/g, "-") || "work";
+      const base = repo.clone_path ? parentDir(repo.clone_path) : "";
+      return `${base ? `${base}/` : ""}wt-${repo.owner}-${repo.name}-${safe}`;
+    },
+    [repo.clone_path, repo.owner, repo.name],
+  );
+
+  const handleBranchChange = (value: string) => {
+    setBranch(value);
+    if (!pathTouched) setPath(defaultPath(value));
+  };
+
+  const handleAdd = async () => {
+    const trimmedBranch = branch.trim();
+    const trimmedPath = path.trim();
+    if (!trimmedBranch || !trimmedPath || adding) return;
+    setAdding(true);
+    setError(null);
+    try {
+      await reposWorktreeAdd(repo.full_name, trimmedBranch, trimmedPath);
+      setBranch("");
+      setPathTouched(false);
+      setPath(defaultPath(""));
+      onChange();
+      void load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  return (
+    <div className="border-t border-neutral-200 bg-neutral-50 px-6 py-2 dark:border-neutral-800 dark:bg-neutral-900/50">
+      {loading && <p className="py-1 text-xs text-neutral-500">Loading worktrees…</p>}
+      {error && (
+        <p role="alert" className="py-1 text-xs text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
+
+      {(data?.worktrees ?? []).map((worktree) => (
+        <div
+          key={worktree.name}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            onWorktreeMenu(event, worktree);
+          }}
+          className="flex cursor-default items-center gap-2 rounded px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        >
+          <span className="shrink-0 text-xs font-medium">{worktree.branch}</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-500">{worktree.path}</span>
+          {worktree.head && (
+            <span className="shrink-0 font-mono text-[10px] text-neutral-400">{worktree.head}</span>
+          )}
+        </div>
+      ))}
+      {data && data.worktrees.length === 0 && !loading && (
+        <p className="py-1 text-xs text-neutral-500">No worktrees yet.</p>
+      )}
+
+      <form
+        className="mt-2 flex items-center gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void handleAdd();
+        }}
+      >
+        <input
+          list={`wt-branches-${repo.full_name}`}
+          value={branch}
+          onChange={(event) => handleBranchChange(event.target.value)}
+          placeholder="Branch — pick or type a new one"
+          aria-label={`Branch for new ${repo.full_name} worktree`}
+          className="w-44 rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+        />
+        <datalist id={`wt-branches-${repo.full_name}`}>
+          {(data?.branches ?? []).map((name) => (
+            <option key={name} value={name} />
+          ))}
+        </datalist>
+        <input
+          value={path}
+          onChange={(event) => {
+            setPath(event.target.value);
+            setPathTouched(true);
+          }}
+          placeholder="Target path"
+          aria-label={`Path for new ${repo.full_name} worktree`}
+          className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+        />
+        <button
+          type="submit"
+          disabled={adding || !branch.trim() || !path.trim()}
+          className="shrink-0 rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-neutral-700"
+        >
+          Add
+        </button>
+      </form>
+      <p className="mt-1 text-[10px] text-neutral-400">
+        Relative paths resolve next to the clone ({repo.clone_path ? parentDir(repo.clone_path) : "…"}).
+        Deleting a worktree keeps its branch.
+      </p>
+    </div>
+  );
+}
+
+/** The parent directory of an absolute path (used for the default worktree
+ * location). Falls back to the input itself when there's no separator. */
+function parentDir(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index > 0 ? path.slice(0, index) : path;
+}
+
 /** Indeterminate progress: git2 can't predict the pack size, so the bar never
  * shows a fraction — just a moving block and the running byte count. */
-function CloneProgress({ received }: { received: number }) {
-  return (
+function CloneProgress({ received }: { received: number }) {  return (
     <div className="flex w-40 shrink-0 flex-col gap-0.5" title={`${formatBytes(received)} downloaded`}>
       <div className="h-1 w-full overflow-hidden rounded bg-neutral-200 dark:bg-neutral-700">
         <div className="h-full w-1/2 animate-pulse rounded bg-neutral-500" />

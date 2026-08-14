@@ -21,6 +21,7 @@ mod priority;
 mod service;
 mod socket;
 mod store;
+mod worktrees;
 
 use std::path::PathBuf;
 use std::sync::Arc;

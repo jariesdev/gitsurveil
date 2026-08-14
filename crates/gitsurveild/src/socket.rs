@@ -2,8 +2,9 @@
 //! unix domain socket (macOS/Linux) or a named pipe (Windows).
 //! Implements `status`, `items.{list,history,dismiss,undismiss}`,
 //! `accounts.{add,list,remove}`, `rules.list`, `repos.{list,set,remove,new,
-//! ack_new,refresh,clone,clone_status}`, `conflicts.*`, `pr.*`, `prs.list`,
-//! and `poll.now`. Later phases add more `match` arms to [`dispatch`] without
+//! ack_new,refresh,clone,clone_status,worktrees,worktree_add,worktree_remove}`,
+//! `conflicts.*`, `pr.*`, `prs.list`, `apps.{list,add,remove,open}`, and
+//! `poll.now`. Later phases add more `match` arms to [`dispatch`] without
 //! touching the transport code.
 
 use std::collections::HashMap;
@@ -215,6 +216,27 @@ struct ConflictsSessionIdParams {
     session_id: String,
 }
 
+/// Params for `apps.add` — the display name and the bare executable on `PATH`
+/// (e.g. `name: "VS Code"`, `command: "code"`).
+#[derive(Debug, Deserialize)]
+struct AppsAddParams {
+    name: String,
+    command: String,
+}
+
+/// Params for `apps.remove` — the registered command to forget.
+#[derive(Debug, Deserialize)]
+struct AppsRemoveParams {
+    command: String,
+}
+
+/// Params for `apps.open` — which registered app opens which worktree path.
+#[derive(Debug, Deserialize)]
+struct AppsOpenParams {
+    command: String,
+    path: String,
+}
+
 /// Dispatches one decoded [`Request`] to the matching daemon capability and
 /// returns its [`Response`]. Kept as a single flat `match` — one method per
 /// arm, no framework — per `CLAUDE.md`'s "no frameworks in the daemon" rule.
@@ -238,6 +260,9 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "repos.refresh" => handle_repos_refresh(state).await,
         "repos.clone" => handle_repos_clone(state, req.params).await,
         "repos.clone_status" => handle_repos_clone_status(state, req.params),
+        "repos.worktrees" => handle_repos_worktrees(state, req.params).await,
+        "repos.worktree_add" => handle_repos_worktree_add(state, req.params).await,
+        "repos.worktree_remove" => handle_repos_worktree_remove(state, req.params).await,
         "conflicts.prepare" => handle_conflicts_prepare(state, req.params).await,
         "conflicts.file" => handle_conflicts_file(state, req.params).await,
         "conflicts.save" => handle_conflicts_save(state, req.params).await,
@@ -256,6 +281,10 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "pr.branches" => handle_pr(state, req.params, PrAction::Branches).await,
         "pr.labels" => handle_pr(state, req.params, PrAction::Labels).await,
         "prs.list" => handle_prs_list(state, req.params).await,
+        "apps.list" => handle_apps_list(state),
+        "apps.add" => handle_apps_add(state, req.params),
+        "apps.remove" => handle_apps_remove(state, req.params),
+        "apps.open" => handle_apps_open(state, req.params),
         "poll.now" => handle_poll_now(state).await,
         other => Err(DaemonError::UnknownMethod(other.to_string())),
     };
@@ -473,6 +502,119 @@ fn handle_accounts_remove(state: &ServerState, params: serde_json::Value) -> Res
     keychain::delete_token(&params.id)?;
     state.store.remove_account(&params.id)?;
     Ok(serde_json::Value::Null)
+}
+
+/// Lists every registered "Open with" application, sorted by display name —
+/// the data behind a worktree context menu's "Open with" submenu and the
+/// Applications list on the Settings page.
+fn handle_apps_list(state: &ServerState) -> Result<serde_json::Value> {
+    Ok(serde_json::to_value(state.store.list_apps()?)
+        .expect("Vec<RegisteredApp> always serializes"))
+}
+
+/// Registers an application for the worktree "Open with" menu. `command` must
+/// be a single whitespace-free executable name resolvable on `PATH` (e.g.
+/// `code`); the daemon runs it directly as `command <path>`, never through a
+/// shell, so any flag, argument, quote, or path separator is rejected here.
+/// Registering the same command twice under a different name is a conflict.
+fn handle_apps_add(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: AppsAddParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let name = params.name.trim();
+    if name.is_empty() {
+        return Err(DaemonError::InvalidParams("name is required".into()));
+    }
+    let command = params.command.trim();
+    validate_command(command)?;
+    let now = crate::poller::now_rfc3339();
+    let inserted = state.store.add_app(
+        &gitsurveil_proto::RegisteredApp {
+            name: name.into(),
+            command: command.into(),
+        },
+        &now,
+    )?;
+    if !inserted {
+        return Err(DaemonError::InvalidParams(format!(
+            "{command} is already registered"
+        )));
+    }
+    Ok(serde_json::json!({ "name": name, "command": command }))
+}
+
+/// Forgets a registered application. Idempotent — removing one that isn't
+/// registered succeeds, so a UI retry can't wedge.
+fn handle_apps_remove(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: AppsRemoveParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    state.store.remove_app(&params.command)?;
+    Ok(serde_json::Value::Null)
+}
+
+/// Launches `command <path>` — the worktree context menu's "Open with" action.
+/// Only commands registered via `apps.add` are ever run (defense in depth:
+/// the UI only offers registered ones, and the daemon double-checks), and the
+/// path is passed as a single argument with no shell involved. Returns a
+/// normalized error when the binary isn't found so the UI can say "is it
+/// installed and on PATH?".
+fn handle_apps_open(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params: AppsOpenParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    if params.path.contains('\0') {
+        return Err(DaemonError::InvalidParams("path must not contain NUL".into()));
+    }
+    if !state.store.app_registered(&params.command)? {
+        return Err(DaemonError::InvalidParams(format!(
+            "{} is not registered",
+            params.command
+        )));
+    }
+    spawn_app(&params.command, &params.path)?;
+    Ok(serde_json::Value::Null)
+}
+
+/// `apps.add`'s command contract: one whitespace-free token that is either an
+/// executable name resolved on `PATH` or an absolute path to one. The daemon
+/// runs it with `Command::new(command)` and no shell, so anything beyond a
+/// bare target (flags, args, quotes, a `\0`) would either be swallowed
+/// silently or panic — rejecting up front turns that into a user-facing error.
+fn validate_command(command: &str) -> Result<()> {
+    if command.is_empty() {
+        return Err(DaemonError::InvalidParams("command is required".into()));
+    }
+    if command.contains('\0') || command.split_whitespace().count() > 1 {
+        return Err(DaemonError::InvalidParams(
+            "command must be an executable name on PATH or an absolute path (no flags, args, or spaces)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Spawns `command <path>` as a detached child process. On Windows the
+/// command goes through `cmd /C` so a `.cmd`/`.bat` shim (like the
+/// npm-installed `code`) resolves the way it would in a terminal.
+fn spawn_app(command: &str, path: &str) -> Result<()> {
+    let map_err = |e: std::io::Error| {
+        DaemonError::Config(format!(
+            "could not start {command}: {e} — is it installed and on PATH?"
+        ))
+    };
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", command, path])
+            .spawn()
+            .map_err(map_err)?;
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new(command)
+            .arg(path)
+            .spawn()
+            .map_err(map_err)?;
+    }
+    Ok(())
 }
 
 /// Forces a poll cycle now. Runs inline on the caller's connection, so the
@@ -740,6 +882,108 @@ fn handle_repos_clone_status(state: &ServerState, params: serde_json::Value) -> 
         serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
     let status: Option<CloneStatus> = state.store.clone_status(&params.job_id)?;
     Ok(serde_json::to_value(status).expect("Option<CloneStatus> always serializes"))
+}
+
+/// Params for `repos.worktrees`.
+#[derive(Debug, Deserialize)]
+struct RepoWorktreesParams {
+    repo: String,
+}
+
+/// Params for `repos.worktree_add`. `branch` may be an existing local or
+/// remote branch or a brand-new name (created in the new worktree); `path` is
+/// the target directory, absolute or relative to the clone's parent.
+#[derive(Debug, Deserialize)]
+struct RepoWorktreeAddParams {
+    repo: String,
+    branch: String,
+    path: String,
+}
+
+/// Params for `repos.worktree_remove`. `name` is the worktree's registered
+/// name (`git worktree list`), not its path.
+#[derive(Debug, Deserialize)]
+struct RepoWorktreeRemoveParams {
+    repo: String,
+    name: String,
+}
+
+/// The registered clone path for `repo`, or a Config error explaining that
+/// worktrees need a local clone first. Used by all three worktree handlers.
+fn tracked_clone_path(state: &ServerState, repo: &str) -> Result<std::path::PathBuf> {
+    catalog_repo(state, repo)?
+        .clone_path
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| {
+            DaemonError::Config(format!(
+                "no local clone configured for {repo} — clone it first"
+            ))
+        })
+}
+
+/// `repos.worktrees` — a repo's user-created worktrees plus the branches a new
+/// one can be created from. Derived from the clone's git metadata on every
+/// call, so worktrees made or removed outside gitsurveil show up too.
+async fn handle_repos_worktrees(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: RepoWorktreesParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    if !is_repo_slug(&params.repo) {
+        return Err(DaemonError::InvalidParams(format!(
+            "repo must be \"owner/name\", got {:?}",
+            params.repo
+        )));
+    }
+    let clone_path = tracked_clone_path(state, &params.repo)?;
+    let result =
+        run_git_op(move || crate::worktrees::list(&clone_path)).await?;
+    Ok(serde_json::to_value(result).expect("WorktreesResult always serializes"))
+}
+
+/// `repos.worktree_add` — creates a worktree for `branch` at `path` and
+/// returns its info. The target must be absent or empty; a pre-existing
+/// non-empty directory is an error, never overwritten.
+async fn handle_repos_worktree_add(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: RepoWorktreeAddParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    if !is_repo_slug(&params.repo) {
+        return Err(DaemonError::InvalidParams(format!(
+            "repo must be \"owner/name\", got {:?}",
+            params.repo
+        )));
+    }
+    let clone_path = tracked_clone_path(state, &params.repo)?;
+    let branch = params.branch.clone();
+    let path = params.path.clone();
+    let info =
+        run_git_op(move || crate::worktrees::add(&clone_path, &branch, &path)).await?;
+    Ok(serde_json::to_value(info).expect("WorktreeInfo always serializes"))
+}
+
+/// `repos.worktree_remove` — unregisters a worktree and removes its working
+/// directory. Keeps the checked-out branch, and refuses dirty worktrees and
+/// `gitsurveil-*` conflict sessions.
+async fn handle_repos_worktree_remove(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: RepoWorktreeRemoveParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    if !is_repo_slug(&params.repo) {
+        return Err(DaemonError::InvalidParams(format!(
+            "repo must be \"owner/name\", got {:?}",
+            params.repo
+        )));
+    }
+    let clone_path = tracked_clone_path(state, &params.repo)?;
+    let name = params.name.clone();
+    run_git_op(move || crate::worktrees::remove(&clone_path, &name)).await?;
+    Ok(serde_json::Value::Null)
 }
 
 /// Runs one conflict-resolver step against a session, in a blocking thread
@@ -1624,5 +1868,275 @@ mod tests {
         let repo = Repository::open(&clone).unwrap();
         assert_eq!(repo.head().unwrap().name().unwrap(), "refs/heads/main");
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn repos_worktrees_requires_a_tracked_clone() {
+        let state = test_state();
+        seed_catalog(&state.store);
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 30,
+                method: "repos.worktrees".into(),
+                params: serde_json::json!({ "repo": "acme/api" }),
+            },
+        )
+        .await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "config_error");
+        assert!(err.message.contains("no local clone configured"));
+    }
+
+    #[tokio::test]
+    async fn repos_worktree_requires_an_owner_name_slug() {
+        let state = test_state();
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 31,
+                method: "repos.worktree_add".into(),
+                params: serde_json::json!({
+                    "repo": "not-a-slug",
+                    "branch": "feature",
+                    "path": "/tmp/wt"
+                }),
+            },
+        )
+        .await;
+        assert_eq!(resp.error.unwrap().code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn repos_worktree_add_list_remove_round_trip() {
+        let state = test_state();
+        seed_catalog(&state.store);
+
+        let base = std::env::temp_dir().join(format!("gs-wt-sock-{}", uuid::Uuid::new_v4()));
+        let clone = base.join("clone");
+        std::fs::create_dir_all(&base).unwrap();
+        git(&base, &["init", "--bare", "-b", "main", "remote.git"]);
+        git(&base, &["clone", "remote.git", "clone"]);
+        git(&clone, &["config", "user.email", "test@example.com"]);
+        git(&clone, &["config", "user.name", "Test"]);
+        std::fs::write(clone.join("file.txt"), "base\n").unwrap();
+        git(&clone, &["add", "."]);
+        git(&clone, &["commit", "-m", "initial"]);
+        git(&clone, &["push", "-u", "origin", "main"]);
+        git(&clone, &["checkout", "-b", "feature"]);
+        std::fs::write(clone.join("file.txt"), "feature\n").unwrap();
+        git(&clone, &["commit", "-am", "feature"]);
+        git(&clone, &["push", "-u", "origin", "feature"]);
+        git(&clone, &["checkout", "main"]);
+        let now = crate::poller::now_rfc3339();
+        state
+            .store
+            .set_repo_path("acc-1", "acme/api", &clone.to_string_lossy(), &now)
+            .unwrap();
+
+        let target = base.join("wt-acme-api-feature");
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 32,
+                method: "repos.worktree_add".into(),
+                params: serde_json::json!({
+                    "repo": "acme/api",
+                    "branch": "feature",
+                    "path": target.to_string_lossy(),
+                }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none(), "add failed: {:?}", resp.error);
+        assert_eq!(resp.result.unwrap()["branch"], "feature");
+
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 33,
+                method: "repos.worktrees".into(),
+                params: serde_json::json!({ "repo": "acme/api" }),
+            },
+        )
+        .await;
+        let worktrees = resp.result.unwrap()["worktrees"].as_array().unwrap().clone();
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0]["name"], "wt-acme-api-feature");
+
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 34,
+                method: "repos.worktree_remove".into(),
+                params: serde_json::json!({
+                    "repo": "acme/api",
+                    "name": "wt-acme-api-feature",
+                }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none(), "remove failed: {:?}", resp.error);
+
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 35,
+                method: "repos.worktrees".into(),
+                params: serde_json::json!({ "repo": "acme/api" }),
+            },
+        )
+        .await;
+        assert_eq!(resp.result.unwrap()["worktrees"].as_array().unwrap().len(), 0);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn apps_add_list_remove_round_trip() {
+        let state = test_state();
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 40,
+                method: "apps.add".into(),
+                params: serde_json::json!({ "name": "VS Code", "command": "code" }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none(), "add failed: {:?}", resp.error);
+        assert_eq!(resp.result.unwrap(), serde_json::json!({ "name": "VS Code", "command": "code" }));
+
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 41,
+                method: "apps.add".into(),
+                params: serde_json::json!({ "name": "Sublime Merge", "command": "smerge" }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none());
+
+        let resp = dispatch(
+            &state,
+            Request { id: 42, method: "apps.list".into(), params: serde_json::Value::Null },
+        )
+        .await;
+        let apps = resp.result.unwrap();
+        assert_eq!(apps.as_array().unwrap().len(), 2);
+        assert_eq!(apps[0]["name"], "Sublime Merge", "sorted by display name");
+        assert_eq!(apps[1]["command"], "code");
+
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 43,
+                method: "apps.remove".into(),
+                params: serde_json::json!({ "command": "code" }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none());
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 44,
+                method: "apps.remove".into(),
+                params: serde_json::json!({ "command": "code" }),
+            },
+        )
+        .await;
+        assert!(resp.error.is_none(), "removing an unregistered app is a no-op");
+    }
+
+    #[tokio::test]
+    async fn apps_add_rejects_duplicate_and_multiword_commands() {
+        let state = test_state();
+        let ok = dispatch(
+            &state,
+            Request {
+                id: 45,
+                method: "apps.add".into(),
+                params: serde_json::json!({ "name": "VS Code", "command": "code" }),
+            },
+        )
+        .await;
+        assert!(ok.error.is_none());
+
+        let dup = dispatch(
+            &state,
+            Request {
+                id: 46,
+                method: "apps.add".into(),
+                params: serde_json::json!({ "name": "Code", "command": "code" }),
+            },
+        )
+        .await;
+        let err = dup.error.unwrap();
+        assert_eq!(err.code, "invalid_params");
+        assert!(err.message.contains("already registered"));
+
+        let multiword = dispatch(
+            &state,
+            Request {
+                id: 47,
+                method: "apps.add".into(),
+                params: serde_json::json!({ "name": "X", "command": "code --new-window" }),
+            },
+        )
+        .await;
+        assert_eq!(multiword.error.unwrap().code, "invalid_params");
+
+        let empty = dispatch(
+            &state,
+            Request {
+                id: 48,
+                method: "apps.add".into(),
+                params: serde_json::json!({ "name": "", "command": "code" }),
+            },
+        )
+        .await;
+        assert_eq!(empty.error.unwrap().code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn apps_open_rejects_unregistered_and_unknown_binary() {
+        let state = test_state();
+        let unregistered = dispatch(
+            &state,
+            Request {
+                id: 49,
+                method: "apps.open".into(),
+                params: serde_json::json!({ "command": "code", "path": "/tmp/wt" }),
+            },
+        )
+        .await;
+        assert_eq!(unregistered.error.unwrap().code, "invalid_params");
+
+        state.store
+            .add_app(
+                &gitsurveil_proto::RegisteredApp {
+                    name: "Definitely Not Installed".into(),
+                    command: "gitsurveil-no-such-binary-xyz".into(),
+                },
+                "t0",
+            )
+            .unwrap();
+        let missing = dispatch(
+            &state,
+            Request {
+                id: 50,
+                method: "apps.open".into(),
+                params: serde_json::json!({
+                    "command": "gitsurveil-no-such-binary-xyz",
+                    "path": "/tmp/wt",
+                }),
+            },
+        )
+        .await;
+        let err = missing.error.unwrap();
+        assert_eq!(err.code, "config_error");
+        assert!(err.message.contains("is it installed and on PATH?"));
     }
 }

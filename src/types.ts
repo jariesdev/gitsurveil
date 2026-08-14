@@ -191,6 +191,41 @@ export interface CloneStatus {
   error: string | null;
 }
 
+/**
+ * One user-created worktree of a cloned repo (`specs/desktop-ui.md`). The
+ * name is what `git worktree list` registers; the branch may be "(detached)".
+ */
+export interface WorktreeInfo {
+  name: string;
+  /** Absolute path to the worktree's working directory. */
+  path: string;
+  /** Checked-out branch short name, or "(detached)". */
+  branch: string;
+  /** Short (7-char) head commit id, empty when the head is unreadable. */
+  head: string;
+}
+
+/**
+ * `repos.worktrees`: a repo's worktrees plus every branch a new one could be
+ * created from (local names, and remote names deduped to their short form).
+ */
+export interface WorktreesResult {
+  worktrees: WorktreeInfo[];
+  branches: string[];
+}
+
+/**
+ * An application registered for the worktree "Open with" menu
+ * (`specs/desktop-ui.md`). `command` is a bare executable name on `PATH` the
+ * daemon runs as `command <path>` — never through a shell.
+ */
+export interface RegisteredApp {
+  /** Display name shown in the "Open with" submenu. */
+  name: string;
+  /** Bare command-line executable on `PATH`, e.g. `code`. */
+  command: string;
+}
+
 /** How the dashboard groups items. */
 export type GroupBy = "priority" | "type";
 

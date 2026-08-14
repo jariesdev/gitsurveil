@@ -65,6 +65,7 @@ const mockIpc = vi.hoisted(() => {
     reposAckNew: vi.fn(),
     reposList: vi.fn(),
     reposNew: vi.fn(),
+    appsList: vi.fn(),
     undismissItem: vi.fn(),
     listPullRequests: vi.fn(),
     prDetail: vi.fn(),
@@ -91,6 +92,7 @@ const mockIpc = vi.hoisted(() => {
   m.listRules.mockResolvedValue([]);
   m.reposList.mockResolvedValue(catalog);
   m.reposNew.mockResolvedValue([]);
+  m.appsList.mockResolvedValue([]);
   m.listPullRequests.mockResolvedValue([]);
   m.prDetail.mockRejectedValue(new Error("not opened"));
   m.pollNow.mockResolvedValue(undefined);
@@ -118,5 +120,17 @@ describe("App navigation", () => {
     expect(await screen.findByText("ariesragingriverict/paypal")).toBeTruthy();
     expect(screen.getByText("wthvillas/villasplatform")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Repositories" })).toBeTruthy();
+  });
+
+  it("renders the Settings view when its nav item is clicked", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const settingsNav = await screen.findByRole("button", { name: "Settings" });
+    await user.click(settingsNav);
+
+    expect(
+      await screen.findByText("Open with… applications"),
+    ).toBeTruthy();
   });
 });

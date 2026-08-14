@@ -19,11 +19,14 @@ import type {
   PrState,
   PullRequestDetail,
   PullRequestSummary,
+  RegisteredApp,
   RepoCatalog,
   Repository,
   Rule,
   ScoredItem,
   StatusResult,
+  WorktreeInfo,
+  WorktreesResult,
 } from "./types";
 
 /**
@@ -49,7 +52,11 @@ export function openUrl(url: string): Promise<void> {
   return invoke<void>("open_url", { url });
 }
 
-/** Closes (and destroys) the popover window. */
+/**
+ * Dismisses the popover. The window is hidden (not destroyed) so the next
+ * tray click reuses the warm webview; the Rust shell reclaims it after an
+ * idle timeout.
+ */
 export function closePopover(): Promise<void> {
   return invoke<void>("close_popover");
 }
@@ -134,6 +141,33 @@ export function reposClone(repo: string, target: string): Promise<string> {
 /** One clone job's current status, or `null` when the job id is unknown. */
 export function reposCloneStatus(jobId: string): Promise<CloneStatus | null> {
   return invoke<CloneStatus | null>("repos_clone_status", { jobId });
+}
+
+/**
+ * A repo's user-created worktrees plus the branches a new one can be created
+ * from. Derived from the clone's git metadata on each call.
+ */
+export function reposWorktrees(repo: string): Promise<WorktreesResult> {
+  return invoke<WorktreesResult>("repos_worktrees", { repo });
+}
+
+/**
+ * Creates a worktree for `branch` at `path`. `branch` may be an existing
+ * local/remote branch or a brand-new name; `path` may be relative to the
+ * clone's parent. Errors if the target is non-empty or the branch is checked
+ * out elsewhere — nothing pre-existing is ever touched.
+ */
+export function reposWorktreeAdd(
+  repo: string,
+  branch: string,
+  path: string,
+): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("repos_worktree_add", { repo, branch, path });
+}
+
+/** Removes a worktree (keeping its branch); refuses dirty worktrees. */
+export function reposWorktreeRemove(repo: string, name: string): Promise<void> {
+  return invoke<void>("repos_worktree_remove", { repo, name });
 }
 
 /** Asks the daemon to poll now rather than waiting for the next cycle. */
@@ -264,12 +298,35 @@ export function listPullRequests(args?: {
   });
 }
 
+// ---- registered apps (`specs/desktop-ui.md`) -----------------------------
+// The "Open with" apps for worktree context menus. The daemon stores the
+// registry and spawns the process; these just forward.
+
+/** Lists the registered "Open with" applications, sorted by display name. */
+export function appsList(): Promise<RegisteredApp[]> {
+  return invoke<RegisteredApp[]>("apps_list");
+}
+
+/** Registers an application (`name` shows in the menu, `command` is the bare executable). */
+export function appsAdd(name: string, command: string): Promise<RegisteredApp> {
+  return invoke<RegisteredApp>("apps_add", { name, command });
+}
+
+/** Forgets a registered application. Idempotent. */
+export function appsRemove(command: string): Promise<void> {
+  return invoke<void>("apps_remove", { command });
+}
+
+/** Opens `path` with a registered application (daemon spawns `command <path>`). */
+export function appsOpen(command: string, path: string): Promise<void> {
+  return invoke<void>("apps_open", { command, path });
+}
+
 // ---- conflict resolution (`specs/conflict-resolver.md`) ------------------
 // All of these act on the daemon's temp worktree — the user's local clone is
 // never touched.
 
-/** Starts a resolution session for `repo#number`. Requires a configured clone. */
-export function conflictPrepare(
+/** Starts a resolution session for `repo#number`. Requires a configured clone. */export function conflictPrepare(
   repo: string,
   number: number,
 ): Promise<ConflictSession> {

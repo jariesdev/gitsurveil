@@ -34,9 +34,10 @@ import { NewReposModal } from "./NewReposModal";
 import { PullRequests } from "./PullRequests/PullRequests";
 import { Repos } from "./Repos";
 import { Rules } from "./Rules";
+import { Settings } from "./Settings";
 import { ViewErrorBoundary } from "./ErrorBoundary";
 
-type View = "dashboard" | "pull-requests" | "history" | "rules" | "repos" | "accounts";
+type View = "dashboard" | "pull-requests" | "history" | "rules" | "repos" | "accounts" | "settings";
 
 const NAV: { id: View; label: string }[] = [
   { id: "dashboard", label: "Dashboard" },
@@ -45,6 +46,7 @@ const NAV: { id: View; label: string }[] = [
   { id: "rules", label: "Rules" },
   { id: "repos", label: "Repositories" },
   { id: "accounts", label: "Accounts" },
+  { id: "settings", label: "Settings" },
 ];
 
 interface Data {
@@ -212,6 +214,7 @@ export function App() {
           {view === "accounts" && (
             <Accounts accounts={data.accounts} onChange={() => void load()} />
           )}
+          {view === "settings" && <Settings />}
           </ViewErrorBoundary>
         </main>
       </div>
