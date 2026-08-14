@@ -236,7 +236,8 @@ opens the full window:
 - **Rules** — how scoring works, and what your configured rules do.
 - **Repository and Worktrees** — every repository discovered across your
   accounts, with account and organization filters. A single click on a row
-  opens the repo in your browser; the chevron expands the worktree panel. Repos
+  expands or collapses its worktree panel; a **double click** opens the repo
+  in your browser. Repos
   the daemon has found but you haven't seen yet are flagged in a "new
   repositories" modal when the window opens (one dismissal acks the whole
   batch). Right-click any row to open it on GitHub, clone it locally into a
