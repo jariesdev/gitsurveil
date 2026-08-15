@@ -43,7 +43,7 @@ describe("Settings", () => {
     expect(screen.getByText("smerge", { selector: ".font-mono" })).toBeTruthy();
   });
 
-  it("adds an application and reloads the list", async () => {
+  it("adds an application via the modal and reloads the list", async () => {
     vi.mocked(appsList)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ name: "VS Code", command: "code" }]);
@@ -51,18 +51,33 @@ describe("Settings", () => {
     render(<Settings />);
     expect(screen.getByText(/No applications yet/)).toBeTruthy();
 
+    // The add form lives in a modal, opened by the section's button.
+    fireEvent.click(screen.getByRole("button", { name: "Add application" }));
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "VS Code" },
     });
     fireEvent.change(screen.getByLabelText("Application or Command"), {
       target: { value: "code" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Add application" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
 
     await waitFor(() => expect(appsAdd).toHaveBeenCalledWith("VS Code", "code"));
     // The reload brings the new row in; the empty state is gone.
     expect(await screen.findByText("VS Code")).toBeTruthy();
     expect(screen.queryByText(/No applications yet/)).toBeNull();
+    // The modal closes itself after the app is registered.
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("closes the add-application modal on Cancel", async () => {
+    vi.mocked(appsList).mockResolvedValue([]);
+    render(<Settings />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add application" }));
+    expect(screen.getByRole("dialog", { name: "Add an application" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("fills the command field from the executable file picker", async () => {
@@ -70,6 +85,7 @@ describe("Settings", () => {
     dialog.open.mockResolvedValueOnce("/usr/local/bin/code");
     render(<Settings />);
 
+    fireEvent.click(screen.getByRole("button", { name: "Add application" }));
     fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
     await waitFor(() =>
       expect(
@@ -126,13 +142,14 @@ describe("Settings", () => {
     vi.mocked(appsAdd).mockRejectedValue(new Error("code is already registered"));
     render(<Settings />);
 
+    fireEvent.click(screen.getByRole("button", { name: "Add application" }));
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "VS Code" },
     });
     fireEvent.change(screen.getByLabelText("Application or Command"), {
       target: { value: "code" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Add application" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
 
     expect(
       await screen.findByText(/code is already registered/),
