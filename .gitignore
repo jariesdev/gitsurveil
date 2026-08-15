@@ -12,3 +12,4 @@ crates/gitsurveil-app/gen
 
 # Spec documents are the design source of truth, kept out of the repo.
 /specs
+.claude
