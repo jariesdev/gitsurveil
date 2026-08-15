@@ -30,13 +30,15 @@ pub enum ItemKind {
     /// click from landing. Fired only on the transition, never for a
     /// merely-open authored PR (`specs/priority-engine.md`).
     ReadyToMerge,
-    /// A pull request authored by the user received new activity (a commit,
-    /// comment, review, or state change) — unlike [`Self::CiFailed`] and
-    /// [`Self::ReviewStateChanged`], which single out specific transitions on
-    /// authored PRs, this fires on any update to one.
+    /// A pull request authored by the user needs attention: a comment from
+    /// someone else, an unresolved review thread, or a failing CI check. A
+    /// merely-open authored PR (only commits / the user's own comments)
+    /// produces no item (`specs/priority-engine.md`).
     Authored,
-    /// A pull request the user reviewed received new activity since. Distinct
-    /// from [`Self::ReviewRequested`], which is about a review still owed.
+    /// A pull request the user reviewed has an unanswered reply in a review
+    /// thread the user commented in — it clears once the user replies back.
+    /// Distinct from [`Self::ReviewRequested`], which is about a review still
+    /// owed.
     ReviewedByMe,
 }
 
@@ -130,6 +132,12 @@ pub struct ActionItem {
     /// The original GitHub reason/type string, kept for debugging and to
     /// support future priority rules without a schema change.
     pub raw_kind: String,
+    /// Daemon-internal fingerprint of the activity that makes this item
+    /// qualify (e.g. the set of comments and unresolved threads behind an
+    /// `Authored` item). Compared across polls to detect qualifying
+    /// *transitions* for notifications. Never serialized over IPC.
+    #[serde(skip)]
+    pub activity: Option<String>,
 }
 
 /// Aggregate CI/check-run status for a pull request.

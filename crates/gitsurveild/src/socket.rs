@@ -1590,6 +1590,7 @@ mod tests {
             last_seen_at: "2026-08-13T12:00:00Z".into(),
             ci_status: gitsurveil_proto::CiStatus::None,
             raw_kind: "assign".into(),
+            activity: None,
         };
         state.store.upsert_item(&item).unwrap();
 
@@ -1632,6 +1633,7 @@ mod tests {
             last_seen_at: "2026-08-13T12:00:00Z".into(),
             ci_status: gitsurveil_proto::CiStatus::None,
             raw_kind: "assign".into(),
+            activity: None,
         }).unwrap();
 
         let params = serde_json::json!({ "id": "i1" });

@@ -3,7 +3,7 @@
 //! that provably tracks the user's review requests, assignments, mentions,
 //! and CI failures with no UI involved.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -109,7 +109,8 @@ async fn poll_account(
         .ok_or_else(|| DaemonError::UnknownAccount(account.id.clone()))?;
     let client = GitHubClient::new(&account.id, &account.api_base, &token)?;
 
-    let mut fetched = client.fetch_search_items().await?;
+    let snapshot = client.fetch_search_items(&account.login).await?;
+    let mut fetched = snapshot.items;
 
     let mut requested_interval = None;
     let prev_etag = store.get_etag(&account.id, NOTIFICATIONS_ENDPOINT)?;
@@ -129,6 +130,32 @@ async fn poll_account(
             }
         }
     }
+
+    // The `review-requested:@me` search is the authoritative source for
+    // `ReviewRequested` items: it only returns PRs whose review is still owed
+    // (GitHub drops a PR the moment the user reviews it). A `/notifications`
+    // feed item for the same PR is therefore either a duplicate (the search
+    // already has it) or stale (the user already reviewed it). Keep feed items
+    // only for PRs the search doesn't know about at all — e.g. team-based
+    // requests that never show up in `@me` searches.
+    let notif_prefix = format!("{}:notif:", account.id);
+    fetched.retain(|item| {
+        if item.kind != gitsurveil_proto::ItemKind::ReviewRequested
+            || !item.id.starts_with(&notif_prefix)
+        {
+            return true;
+        }
+        match pull_number_from_url(&item.url) {
+            Some(number) => {
+                let key = (item.repo.clone(), number);
+                !snapshot.review_requested_keys.contains(&key)
+                    && !snapshot.reviewed_by_me_keys.contains(&key)
+            }
+            // No PR number to dedupe against (e.g. a system notification);
+            // keep it rather than risk dropping a legitimate request.
+            None => true,
+        }
+    });
 
     let muted_repos = store.muted_repos(&account.id)?;
     let previous = store.items_for_account(&account.id)?;
@@ -166,12 +193,63 @@ async fn poll_account(
     Ok((requested_interval, candidates))
 }
 
+/// Extracts the PR/issue number from a GitHub API `subject.url`
+/// (`https://api.github.com/repos/{owner}/{repo}/pulls/{number}`, or the
+/// equivalent `/issues/{number}` form). Returns `None` for non-API or
+/// number-less URLs.
+fn pull_number_from_url(url: &str) -> Option<u64> {
+    url.split('?')
+        .next()?
+        .rsplit('/')
+        .next()?
+        .parse::<u64>()
+        .ok()
+}
+
+/// Parsed form of the `activity` fingerprint an `Authored` item carries: the
+/// sorted ids of comments written by people other than the account user, and
+/// the ids of review threads that are currently unresolved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ActivityFingerprint {
+    comment_ids: BTreeSet<u64>,
+    unresolved_thread_ids: BTreeSet<String>,
+}
+
+impl ActivityFingerprint {
+    /// Parses the `c:<ids>;u:<ids>` string stored on an `Authored` item. An
+    /// absent or legacy value parses to an empty fingerprint, so the first
+    /// poll after an upgrade compares against nothing (any currently-qualifying
+    /// activity reads as a transition once).
+    fn parse(encoded: Option<&str>) -> Self {
+        let mut fingerprint = ActivityFingerprint::default();
+        let Some(encoded) = encoded else {
+            return fingerprint;
+        };
+        for part in encoded.split(';') {
+            if let Some(ids) = part.strip_prefix("c:") {
+                fingerprint.comment_ids = ids
+                    .split(',')
+                    .filter_map(|id| id.parse::<u64>().ok())
+                    .collect();
+            } else if let Some(ids) = part.strip_prefix("u:") {
+                fingerprint.unresolved_thread_ids = ids
+                    .split(',')
+                    .filter(|id| !id.is_empty())
+                    .map(String::from)
+                    .collect();
+            }
+        }
+        fingerprint
+    }
+}
+
 /// Whether a diffed item is worth considering for a notification. Only
 /// genuinely new items, or ones whose CI just broke, normally qualify —
 /// everything else is a silent update: it will still show up in the list and
-/// the tray color. `Authored` and `ReviewedByMe` are the exception — their
-/// whole point is to surface *any* activity, so every update counts, not
-/// just CI.
+/// the tray color. `Authored` and `ReviewedByMe` are curated by content, not
+/// by `updated_at`: `ReviewedByMe` items only move when a reply arrives (so
+/// every update counts), while `Authored` items interrupt only on a new
+/// comment from someone else, a thread newly unresolved, or a CI failure.
 fn newly_relevant(
     change_kind: ChangeKind,
     item: &gitsurveil_proto::ActionItem,
@@ -180,13 +258,34 @@ fn newly_relevant(
     match change_kind {
         ChangeKind::New => true,
         ChangeKind::Carried => false,
-        ChangeKind::Updated => {
-            matches!(
-                item.kind,
-                gitsurveil_proto::ItemKind::Authored | gitsurveil_proto::ItemKind::ReviewedByMe
-            ) || (item.ci_status == CiStatus::Failing
-                && prev.map(|p| p.ci_status) != Some(CiStatus::Failing))
-        }
+        ChangeKind::Updated => match item.kind {
+            gitsurveil_proto::ItemKind::Authored => {
+                let prev_fingerprint = prev
+                    .and_then(|p| p.activity.as_deref())
+                    .map(|encoded| ActivityFingerprint::parse(Some(encoded)))
+                    .unwrap_or_default();
+                let fingerprint = ActivityFingerprint::parse(item.activity.as_deref());
+                let new_comment = !fingerprint
+                    .comment_ids
+                    .difference(&prev_fingerprint.comment_ids)
+                    .next()
+                    .is_none();
+                let newly_unresolved = !fingerprint
+                    .unresolved_thread_ids
+                    .difference(&prev_fingerprint.unresolved_thread_ids)
+                    .next()
+                    .is_none();
+                new_comment
+                    || newly_unresolved
+                    || (item.ci_status == CiStatus::Failing
+                        && prev.map(|p| p.ci_status) != Some(CiStatus::Failing))
+            }
+            gitsurveil_proto::ItemKind::ReviewedByMe => true,
+            _ => {
+                item.ci_status == CiStatus::Failing
+                    && prev.map(|p| p.ci_status) != Some(CiStatus::Failing)
+            }
+        },
     }
 }
 
@@ -212,6 +311,7 @@ mod tests {
             last_seen_at: "2026-08-01T00:00:00Z".into(),
             ci_status,
             raw_kind: "x".into(),
+            activity: None,
         }
     }
 
@@ -249,16 +349,63 @@ mod tests {
     }
 
     #[test]
-    fn authored_and_reviewed_by_me_treat_every_update_as_relevant() {
-        let prev = item(ItemKind::Authored, CiStatus::Passing);
-        let updated = item(ItemKind::Authored, CiStatus::Passing);
+    fn authored_updates_only_count_for_qualifying_transitions() {
+        // A commit or other activity that leaves the fingerprint unchanged
+        // (only `updated_at` moved) is silent.
+        let prev = with_activity(item(ItemKind::Authored, CiStatus::Passing), "c:1;u:");
+        let commit_only = with_activity(item(ItemKind::Authored, CiStatus::Passing), "c:1;u:");
         assert!(
-            newly_relevant(ChangeKind::Updated, &updated, Some(&prev)),
-            "any activity on an authored PR counts, not just CI"
+            !newly_relevant(ChangeKind::Updated, &commit_only, Some(&prev)),
+            "a commit that doesn't change the fingerprint must not notify"
         );
 
+        // A comment from someone else (new comment id) qualifies.
+        let new_comment = with_activity(item(ItemKind::Authored, CiStatus::Passing), "c:1,2;u:");
+        assert!(newly_relevant(ChangeKind::Updated, &new_comment, Some(&prev)));
+
+        // A thread becoming unresolved qualifies.
+        let newly_unresolved = with_activity(item(ItemKind::Authored, CiStatus::Passing), "c:1;u:t1");
+        assert!(newly_relevant(ChangeKind::Updated, &newly_unresolved, Some(&prev)));
+
+        // A CI failure transition qualifies even with an unchanged fingerprint.
+        let now_failing = with_activity(item(ItemKind::Authored, CiStatus::Failing), "c:1;u:");
+        assert!(newly_relevant(ChangeKind::Updated, &now_failing, Some(&prev)));
+
+        // Resolving the last qualifying signal (thread gone from fingerprint)
+        // is not a notification moment — the item simply leaves the list.
+        let prev_unresolved = with_activity(item(ItemKind::Authored, CiStatus::Passing), "c:;u:t1");
+        let resolved = with_activity(item(ItemKind::Authored, CiStatus::Passing), "c:;u:");
+        assert!(!newly_relevant(ChangeKind::Updated, &resolved, Some(&prev_unresolved)));
+    }
+
+    fn with_activity(item: gitsurveil_proto::ActionItem, activity: &str) -> gitsurveil_proto::ActionItem {
+        let mut item = item;
+        item.activity = Some(activity.into());
+        item
+    }
+
+    #[test]
+    fn reviewed_by_me_updates_always_count() {
+        // A `ReviewedByMe` item only ever moves `updated_at` when a new reply
+        // arrives, so every update is worth surfacing.
         let prev = item(ItemKind::ReviewedByMe, CiStatus::Passing);
         let updated = item(ItemKind::ReviewedByMe, CiStatus::Passing);
         assert!(newly_relevant(ChangeKind::Updated, &updated, Some(&prev)));
+    }
+
+    #[test]
+    fn fingerprint_parses_absent_legacy_and_partial_values() {
+        assert_eq!(ActivityFingerprint::parse(None), ActivityFingerprint::default());
+        assert_eq!(
+            ActivityFingerprint::parse(Some("c:1,2;u:t1,t2")),
+            ActivityFingerprint {
+                comment_ids: BTreeSet::from([1, 2]),
+                unresolved_thread_ids: BTreeSet::from(["t1".into(), "t2".into()]),
+            }
+        );
+        assert_eq!(
+            ActivityFingerprint::parse(Some("c:;u:")),
+            ActivityFingerprint::default()
+        );
     }
 }

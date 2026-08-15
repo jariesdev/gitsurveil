@@ -42,6 +42,12 @@ export interface ActionItem {
   last_seen_at: string;
   ci_status: CiStatus;
   raw_kind: string;
+  /**
+   * Daemon-internal fingerprint of the activity that makes an item qualify.
+   * Mirrors the Rust field for completeness, but is `#[serde(skip)]`ped — it
+   * never crosses IPC, so the UI always sees it absent.
+   */
+  activity?: string | null;
 }
 
 /**

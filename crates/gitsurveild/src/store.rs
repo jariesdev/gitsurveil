@@ -85,7 +85,8 @@ impl Store {
                 first_seen_at  TEXT NOT NULL,
                 last_seen_at   TEXT NOT NULL,
                 ci_status      TEXT NOT NULL,
-                raw_kind       TEXT NOT NULL
+                raw_kind       TEXT NOT NULL,
+                activity       TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_items_account ON items(account_id);
             CREATE INDEX IF NOT EXISTS idx_items_state ON items(state);
@@ -164,6 +165,18 @@ impl Store {
             conn.execute_batch(
                 "ALTER TABLE repositories ADD COLUMN notify_enabled INTEGER NOT NULL DEFAULT 1",
             )?;
+        }
+        // v5: `items.activity` is the daemon-internal fingerprint of the
+        // activity that makes an item qualify (e.g. the comment ids and
+        // unresolved thread ids behind an `Authored` item). The poller compares
+        // it across polls to detect qualifying transitions without relying on
+        // `updated_at`, which also advances on irrelevant events like commits.
+        let has_activity = conn
+            .prepare("SELECT 1 FROM pragma_table_info('items') WHERE name = 'activity'")?
+            .query_row([], |_| Ok(()))
+            .is_ok();
+        if !has_activity {
+            conn.execute_batch("ALTER TABLE items ADD COLUMN activity TEXT")?;
         }
         conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?1)",
@@ -261,15 +274,17 @@ impl Store {
         conn.execute(
             "INSERT INTO items (
                 id, account_id, kind, state, repo, number, title, url, author,
-                created_at, updated_at, first_seen_at, last_seen_at, ci_status, raw_kind
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+                created_at, updated_at, first_seen_at, last_seen_at, ci_status,
+                raw_kind, activity
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
              ON CONFLICT(id) DO UPDATE SET
                 state = excluded.state,
                 title = excluded.title,
                 url = excluded.url,
                 updated_at = excluded.updated_at,
                 last_seen_at = excluded.last_seen_at,
-                ci_status = excluded.ci_status",
+                ci_status = excluded.ci_status,
+                activity = excluded.activity",
             params![
                 item.id,
                 item.account_id,
@@ -286,6 +301,7 @@ impl Store {
                 item.last_seen_at,
                 ci_status_to_str(item.ci_status),
                 item.raw_kind,
+                item.activity,
             ],
         )?;
         Ok(())
@@ -319,7 +335,8 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
-                    created_at, updated_at, first_seen_at, last_seen_at, ci_status, raw_kind
+                    created_at, updated_at, first_seen_at, last_seen_at, ci_status,
+                    raw_kind, activity
              FROM items WHERE account_id = ?1",
         )?;
         let rows = stmt.query_map(params![account_id], row_to_item)?;
@@ -333,7 +350,8 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
-                    created_at, updated_at, first_seen_at, last_seen_at, ci_status, raw_kind
+                    created_at, updated_at, first_seen_at, last_seen_at, ci_status,
+                    raw_kind, activity
              FROM items i WHERE state = 'open' AND NOT EXISTS (
                 SELECT 1 FROM repositories r
                 WHERE r.account_id = i.account_id AND r.full_name = i.repo
@@ -351,7 +369,8 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
-                    created_at, updated_at, first_seen_at, last_seen_at, ci_status, raw_kind
+                    created_at, updated_at, first_seen_at, last_seen_at, ci_status,
+                    raw_kind, activity
              FROM items i WHERE state != 'open' AND NOT EXISTS (
                 SELECT 1 FROM repositories r
                 WHERE r.account_id = i.account_id AND r.full_name = i.repo
@@ -940,6 +959,7 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ActionItem> {
         last_seen_at: row.get(12)?,
         ci_status: ci_status_from_str(&ci_status_str),
         raw_kind: row.get(14)?,
+        activity: row.get(15)?,
     })
 }
 
@@ -1056,6 +1076,7 @@ mod tests {
             last_seen_at: "2026-08-01T00:00:00Z".into(),
             ci_status: CiStatus::Passing,
             raw_kind: "review_requested".into(),
+            activity: None,
         }
     }
 
@@ -1067,6 +1088,21 @@ mod tests {
 
         let item = sample_item("item-1");
         store.upsert_item(&item).unwrap();
+        assert_eq!(store.open_items().unwrap(), vec![item]);
+    }
+
+    #[test]
+    fn activity_fingerprint_survives_upsert_and_readback() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        let item = ActionItem {
+            activity: Some("c:1,2,3;u:t1".into()),
+            ..sample_item("item-1")
+        };
+        store.upsert_item(&item).unwrap();
+        // `items_for_account` is what the poller diffs against, so the
+        // fingerprint must be present there (not just in `open_items`).
+        assert_eq!(store.items_for_account("acc-1").unwrap(), vec![item.clone()]);
         assert_eq!(store.open_items().unwrap(), vec![item]);
     }
 
