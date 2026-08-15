@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.2.1] - 2026-08-16
+
+### Fixed
+
+- The packaged app now registers and starts `gitsurveild` itself on launch,
+  so a fresh install no longer needs a manual `gitsurveild install` before
+  the popover stops reporting the service as unreachable. Self-healing on
+  every launch, not just first run.
+
 ## [v0.2.0] - 2026-08-16
 
 ### Added
@@ -65,7 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vendored OpenSSL, Linux build prerequisites, and CI and tag-driven release
   workflows.
 
-[Unreleased]: https://github.com/anomalyco/gitsurveil/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/anomalyco/gitsurveil/compare/v0.2.1...HEAD
+[v0.2.1]: https://github.com/anomalyco/gitsurveil/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/anomalyco/gitsurveil/compare/v0.1.1...v0.2.0
 [v0.1.1]: https://github.com/anomalyco/gitsurveil/compare/v0.1.0-alpha...v0.1.1
 [v0.1.0-alpha]: https://github.com/anomalyco/gitsurveil/releases/tag/v0.1.0-alpha
