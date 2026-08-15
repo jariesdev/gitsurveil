@@ -30,6 +30,9 @@ pub struct Reviewer {
     pub login: String,
     /// `approved`, `changes_requested`, `commented`, or `pending`.
     pub state: String,
+    /// How many review rounds this reviewer has submitted on this PR.
+    /// Zero means they've been requested but haven't reviewed yet.
+    pub rounds: u32,
 }
 
 /// One CI check on the head commit.

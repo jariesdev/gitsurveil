@@ -38,7 +38,7 @@ function pr(overrides: Partial<PullRequestDetail> = {}): PullRequestDetail {
     head: "feature/limits",
     author: "carol",
     labels: ["enhancement"],
-    reviewers: [{ login: "dave", state: "pending" }],
+    reviewers: [{ login: "dave", state: "pending", rounds: 0 }],
     checks: [{ name: "build", conclusion: "success", url: null }],
     mergeability: "clean",
     url: "https://github.com/acme/api/pull/482",
@@ -73,6 +73,26 @@ describe("PrDetail", () => {
     expect(screen.getByText("acme/api#482")).toBeInTheDocument();
     expect(screen.getByText("feature/limits → main")).toBeInTheDocument();
     expect(screen.getByText("Ready to merge")).toBeInTheDocument();
+  });
+
+  it("shows each reviewer's review-round count next to their name", async () => {
+    vi.mocked(ipc.prDetail).mockResolvedValue(
+      pr({
+        reviewers: [
+          { login: "dave", state: "approved", rounds: 3 },
+          { login: "erin", state: "pending", rounds: 0 },
+        ],
+      }),
+    );
+
+    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={vi.fn()} />);
+    await screen.findByText("Add rate limiting");
+
+    expect(screen.getByText(/^dave/)).toBeInTheDocument();
+    expect(screen.getByLabelText("3 review rounds")).toBeInTheDocument();
+    expect(screen.getByLabelText("0 review rounds")).toBeInTheDocument();
+    expect(screen.getByText("approved")).toBeInTheDocument();
+    expect(screen.getByText("pending")).toBeInTheDocument();
   });
 
   it("passes head_sha when merging, so a moved PR is rejected by GitHub", async () => {
@@ -145,6 +165,20 @@ describe("PrDetail", () => {
     expect(screen.queryByRole("button", { name: "Merge" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("closes the pull request via the Close PR button", async () => {
+    // The footer action reads "Close PR" to distinguish it from the button
+    // that closes the detail pane itself.
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(ipc.prDetail).mockResolvedValue(pr());
+    vi.mocked(ipc.prClose).mockResolvedValue(undefined);
+
+    render(<PrDetail repo="acme/api" number={482} onClose={vi.fn()} onChanged={vi.fn()} onResolve={vi.fn()} />);
+    await screen.findByText("Add rate limiting");
+    await userEvent.click(screen.getByRole("button", { name: "Close PR" }));
+
+    expect(ipc.prClose).toHaveBeenCalledWith("acme/api", 482);
   });
 
   it("sends only the edited fields on save", async () => {

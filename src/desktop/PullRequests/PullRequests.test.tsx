@@ -13,9 +13,14 @@ vi.mock("../../ipc", () => ({
   listPullRequests: vi.fn(),
   reposList: vi.fn(),
   openUrl: vi.fn(),
+  prDetail: vi.fn(),
+  prComments: vi.fn(),
+  prBranches: vi.fn(),
+  prLabels: vi.fn(),
 }));
 
-const { listPullRequests, reposList, openUrl } = await import("../../ipc");
+const { listPullRequests, reposList, openUrl, prDetail, prComments, prBranches, prLabels } =
+  await import("../../ipc");
 
 const account: AccountRef = {
   id: "acc-1",
@@ -119,5 +124,67 @@ describe("PullRequests row context menu", () => {
     expect(
       screen.queryByTitle("unresolved review thread"),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("PullRequests row selection", () => {
+  beforeEach(() => {
+    vi.mocked(listPullRequests).mockReset();
+    vi.mocked(reposList).mockReset();
+    vi.mocked(prDetail).mockReset();
+    vi.mocked(prComments).mockReset();
+    vi.mocked(prBranches).mockReset();
+    vi.mocked(prLabels).mockReset();
+    vi.mocked(listPullRequests).mockResolvedValue([pr()]);
+    vi.mocked(reposList).mockResolvedValue({ orgs: [], repos: [] });
+    vi.mocked(prDetail).mockResolvedValue({
+      repo: "acme/api",
+      number: 482,
+      title: "Add rate limiting",
+      body: "Some description",
+      state: "open",
+      draft: false,
+      base: "main",
+      head: "feature/limits",
+      author: "carol",
+      labels: [],
+      reviewers: [{ login: "dave", state: "pending", rounds: 0 }],
+      checks: [],
+      mergeability: "clean",
+      url: "https://github.com/acme/api/pull/482",
+      head_sha: "abc123",
+    });
+    vi.mocked(prComments).mockResolvedValue({ issue_comments: [], review_threads: [] });
+    vi.mocked(prBranches).mockResolvedValue([]);
+    vi.mocked(prLabels).mockResolvedValue([]);
+  });
+
+  it("highlights the row whose detail pane is open", async () => {
+    render(<PullRequests accounts={[account]} onOpenRepos={() => {}} />);
+
+    const row = await screen.findByText("Add rate limiting");
+    expect(row.closest("[aria-current='true']")).toBeNull();
+
+    fireEvent.click(row);
+    await screen.findByRole("complementary", { name: "Pull request detail" });
+
+    expect(row.closest("[aria-current='true']")).not.toBeNull();
+  });
+
+  it("drops the highlight when the detail pane closes", async () => {
+    render(<PullRequests accounts={[account]} onOpenRepos={() => {}} />);
+
+    const row = await screen.findByText("Add rate limiting");
+    fireEvent.click(row);
+    await screen.findByRole("complementary", { name: "Pull request detail" });
+    expect(row.closest("[aria-current='true']")).not.toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close detail" }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("complementary", { name: "Pull request detail" })).not.toBeInTheDocument();
+    });
+    expect(row.closest("[aria-current='true']")).toBeNull();
   });
 });

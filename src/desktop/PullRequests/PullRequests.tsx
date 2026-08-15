@@ -245,15 +245,21 @@ export function PullRequests({
             </p>
           ) : (
             <ul>
-              {visible.map((pr) => (
-                <li key={`${pr.repo}#${pr.number}`}>
-                  <div
-                    className="flex items-center gap-3 border-b border-neutral-200 px-4 py-2 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50"
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      setMenu({ pr, x: event.clientX, y: event.clientY });
-                    }}
-                  >
+              {visible.map((pr) => {
+                const isSelected =
+                  selected?.repo === pr.repo && selected?.number === pr.number;
+                return (
+                  <li key={`${pr.repo}#${pr.number}`}>
+                    <div
+                      aria-current={isSelected ? "true" : undefined}
+                      className={`flex items-center gap-3 border-b border-neutral-200 px-4 py-2 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50 ${
+                        isSelected ? "bg-neutral-100 dark:bg-neutral-800" : ""
+                      }`}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setMenu({ pr, x: event.clientX, y: event.clientY });
+                      }}
+                    >
                     <button
                       type="button"
                       onClick={() => setSelected({ repo: pr.repo, number: pr.number })}
@@ -339,7 +345,8 @@ export function PullRequests({
                     </span>
                   </div>
                 </li>
-              ))}
+              );
+              })}
             </ul>
           )}
         </div>

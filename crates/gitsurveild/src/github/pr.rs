@@ -8,7 +8,7 @@
 //! Uses the same plain `reqwest` client as the rest of the GitHub layer so
 //! request headers and error handling stay uniform.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gitsurveil_proto::{
     Check, CiStatus, Comment, Conversation, MergeMethod, Mergeability, PrRole, PrState,
@@ -56,24 +56,7 @@ impl GitHubClient {
             self.get_json::<RawCheckRuns>(&checks_path)
         );
 
-        let mut reviewers: Vec<Reviewer> = reviews
-            .unwrap_or_default()
-            .into_iter()
-            .map(|r| Reviewer {
-                login: r.user.map(|u| u.login).unwrap_or_default(),
-                state: r.state.to_lowercase(),
-            })
-            .collect();
-        // Reviewers who haven't responded yet aren't in the reviews list at
-        // all; without this they'd silently vanish from the pane.
-        for requested in pr.requested_reviewers.iter().flatten() {
-            if !reviewers.iter().any(|r| r.login == requested.login) {
-                reviewers.push(Reviewer {
-                    login: requested.login.clone(),
-                    state: "pending".to_string(),
-                });
-            }
-        }
+        let reviewers = dedupe_reviewers(reviews.unwrap_or_default(), pr.requested_reviewers.as_ref());
 
         let checks = checks
             .map(|c| {
@@ -543,6 +526,48 @@ struct RawReview {
     state: String,
 }
 
+/// Collapses GitHub's per-round review rows into one entry per reviewer.
+///
+/// `GET /pulls/{number}/reviews` returns one row per review round in
+/// chronological order, so a reviewer who submitted multiple reviews appears
+/// once per round. A later review supersedes the earlier one: each login
+/// appears exactly once, carrying the state of its latest round and the
+/// total number of rounds submitted, in first-seen order. Rows without a
+/// user are skipped (nothing to attribute them to). Reviewers who are still
+/// requested but never submitted a review are appended as `pending` with
+/// zero rounds.
+fn dedupe_reviewers(reviews: Vec<RawReview>, requested_reviewers: Option<&Vec<RawUser>>) -> Vec<Reviewer> {
+    let mut reviewers: Vec<Reviewer> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for review in reviews {
+        let Some(login) = review.user.map(|u| u.login) else {
+            continue;
+        };
+        if seen.insert(login.clone()) {
+            reviewers.push(Reviewer {
+                login,
+                state: review.state.to_lowercase(),
+                rounds: 1,
+            });
+        } else if let Some(existing) = reviewers.iter_mut().find(|r| r.login == login) {
+            // Later round supersedes the earlier one (e.g. CHANGES_REQUESTED
+            // then APPROVED) — the pane should show the current position.
+            existing.state = review.state.to_lowercase();
+            existing.rounds += 1;
+        }
+    }
+    for requested in requested_reviewers.into_iter().flatten() {
+        if !reviewers.iter().any(|r| r.login == requested.login) {
+            reviewers.push(Reviewer {
+                login: requested.login.clone(),
+                state: "pending".to_string(),
+                rounds: 0,
+            });
+        }
+    }
+    reviewers
+}
+
 #[derive(Debug, Deserialize)]
 struct RawCheckRuns {
     check_runs: Vec<RawCheckRun>,
@@ -973,6 +998,71 @@ mod tests {
         assert_eq!(summary.roles.len(), 2);
         assert!(summary.roles.contains(&PrRole::Authored));
         assert!(summary.roles.contains(&PrRole::Assigned));
+    }
+
+    #[test]
+    fn reviewer_appears_once_with_latest_state_and_round_count() {
+        // `GET /pulls/{number}/reviews` returns one row per review round, so
+        // a reviewer who reviewed twice must collapse to a single row whose
+        // state is that of the latest (last) round and whose round count is 2.
+        let reviews = vec![
+            RawReview {
+                user: Some(RawUser { login: "dave".into() }),
+                state: "CHANGES_REQUESTED".into(),
+            },
+            RawReview {
+                user: Some(RawUser { login: "erin".into() }),
+                state: "COMMENTED".into(),
+            },
+            RawReview {
+                user: Some(RawUser { login: "dave".into() }),
+                state: "APPROVED".into(),
+            },
+        ];
+        let reviewers = dedupe_reviewers(reviews, None);
+        assert_eq!(reviewers.len(), 2);
+        assert_eq!(reviewers[0].login, "dave");
+        assert_eq!(reviewers[0].state, "approved");
+        assert_eq!(reviewers[0].rounds, 2);
+        assert_eq!(reviewers[1].login, "erin");
+        assert_eq!(reviewers[1].state, "commented");
+        assert_eq!(reviewers[1].rounds, 1);
+    }
+
+    #[test]
+    fn requested_reviewers_without_a_review_are_pending() {
+        let reviews = vec![RawReview {
+            user: Some(RawUser { login: "dave".into() }),
+            state: "APPROVED".into(),
+        }];
+        let requested = vec![
+            RawUser { login: "dave".into() },
+            RawUser { login: "erin".into() },
+        ];
+        let reviewers = dedupe_reviewers(reviews, Some(&requested));
+        // dave already reviewed; only erin is appended, as pending.
+        assert_eq!(reviewers.len(), 2);
+        assert_eq!(reviewers[0].login, "dave");
+        assert_eq!(reviewers[0].state, "approved");
+        assert_eq!(reviewers[0].rounds, 1);
+        assert_eq!(reviewers[1].login, "erin");
+        assert_eq!(reviewers[1].state, "pending");
+        assert_eq!(reviewers[1].rounds, 0);
+    }
+
+    #[test]
+    fn review_rows_without_a_user_are_skipped() {
+        let reviews = vec![
+            RawReview { user: None, state: "APPROVED".into() },
+            RawReview {
+                user: Some(RawUser { login: "dave".into() }),
+                state: "APPROVED".into(),
+            },
+        ];
+        let reviewers = dedupe_reviewers(reviews, None);
+        assert_eq!(reviewers.len(), 1);
+        assert_eq!(reviewers[0].login, "dave");
+        assert_eq!(reviewers[0].rounds, 1);
     }
 
     #[test]

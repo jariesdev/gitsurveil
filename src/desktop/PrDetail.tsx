@@ -272,7 +272,9 @@ export function PrDetail({
   if (!pr) {
     return (
       <Panel onClose={onClose}>
-        <p className="p-6 text-sm text-neutral-500">Loading…</p>
+        <div className="flex flex-1 items-center justify-center">
+          <p className="p-6 text-sm text-neutral-500">Loading…</p>
+        </div>
       </Panel>
     );
   }
@@ -419,7 +421,15 @@ export function PrDetail({
             <ul className="space-y-1 text-xs">
               {pr.reviewers.map((reviewer) => (
                 <li key={reviewer.login} className="flex justify-between">
-                  <span>{reviewer.login}</span>
+                  <span>
+                    {reviewer.login}
+                    <span
+                      className="ml-1 text-neutral-500"
+                      aria-label={`${reviewer.rounds} review round${reviewer.rounds === 1 ? "" : "s"}`}
+                    >
+                      · {reviewer.rounds} {reviewer.rounds === 1 ? "round" : "rounds"}
+                    </span>
+                  </span>
                   <span className="text-neutral-500">
                     {reviewer.state.replace(/_/g, " ")}
                   </span>
@@ -671,7 +681,7 @@ export function PrDetail({
                 }}
                 className="rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-neutral-700"
               >
-                Close
+                Close PR
               </button>
             </>
           )}

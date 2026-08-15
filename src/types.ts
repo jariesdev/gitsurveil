@@ -265,6 +265,8 @@ export type MergeMethod = "merge" | "squash" | "rebase";
 export interface Reviewer {
   login: string;
   state: string;
+  /** How many review rounds this reviewer has submitted on this PR. */
+  rounds: number;
 }
 
 /** One CI check on the head commit. */
