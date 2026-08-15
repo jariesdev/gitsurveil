@@ -92,6 +92,7 @@ mod tests {
             ci_status: CiStatus::None,
             raw_kind: "x".into(),
             activity: None,
+            archived: false,
         };
         crate::priority::score_item(&item, &[], Utc::now())
     }

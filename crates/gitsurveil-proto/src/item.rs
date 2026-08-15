@@ -138,6 +138,12 @@ pub struct ActionItem {
     /// *transitions* for notifications. Never serialized over IPC.
     #[serde(skip)]
     pub activity: Option<String>,
+    /// Permanently archived by "Clear all history": the item no longer shows
+    /// in the Dashboard or history, and the poller never resurrects it — not
+    /// even when GitHub reports new activity. Never serialized over IPC —
+    /// archived items are excluded before any response leaves the daemon.
+    #[serde(skip)]
+    pub archived: bool,
 }
 
 /// Aggregate CI/check-run status for a pull request.

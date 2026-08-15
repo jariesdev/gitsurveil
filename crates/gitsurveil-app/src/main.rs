@@ -48,6 +48,7 @@ fn main() {
             commands::close_popover,
             commands::open_main_window,
             commands::list_history,
+            commands::clear_history,
             commands::dismiss_item,
             commands::undismiss_item,
             commands::add_account,
@@ -263,6 +264,15 @@ mod commands {
     #[tauri::command]
     pub async fn list_history(limit: Option<usize>) -> Result<Vec<ScoredItem>, String> {
         crate::daemon::list_history(limit)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Archives every resolved and dismissed item permanently; the UI
+    /// confirms with the user first.
+    #[tauri::command]
+    pub async fn clear_history() -> Result<(), String> {
+        crate::daemon::clear_history()
             .await
             .map_err(|e| e.to_string())
     }

@@ -44,6 +44,16 @@ export function listHistory(limit?: number): Promise<ScoredItem[]> {
   return invoke<ScoredItem[]>("list_history", { limit });
 }
 
+/**
+ * Archives every resolved and dismissed item: they leave the Dashboard and
+ * history permanently and never come back, even if still open on GitHub.
+ * Open items are untouched and there is no undo — callers must confirm with
+ * the user first.
+ */
+export function clearHistory(): Promise<void> {
+  return invoke<void>("clear_history");
+}
+
 /** Fetches the daemon's status summary. */
 export function daemonStatus(): Promise<StatusResult> {
   return invoke<StatusResult>("daemon_status");

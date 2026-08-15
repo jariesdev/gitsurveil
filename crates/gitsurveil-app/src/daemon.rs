@@ -140,6 +140,13 @@ pub async fn list_history(limit: Option<usize>) -> Result<Vec<ScoredItem>> {
     call("items.history", params).await
 }
 
+/// Archives every resolved and dismissed item: they leave the Dashboard and
+/// history permanently and never come back, even if still open on GitHub.
+pub async fn clear_history() -> Result<()> {
+    let _: serde_json::Value = call("items.clear_history", serde_json::Value::Null).await?;
+    Ok(())
+}
+
 /// Sets an item's locally-dismissed state.
 pub async fn set_dismissed(id: &str, dismissed: bool) -> Result<()> {
     let method = if dismissed {

@@ -1,6 +1,6 @@
 //! The local API server (`specs/daemon.md`): newline-delimited JSON over a
 //! unix domain socket (macOS/Linux) or a named pipe (Windows).
-//! Implements `status`, `items.{list,history,dismiss,undismiss}`,
+//! Implements `status`, `items.{list,history,clear_history,dismiss,undismiss}`,
 //! `accounts.{add,list,remove}`, `rules.list`, `repos.{list,set,remove,new,
 //! ack_new,refresh,clone,clone_status,worktrees,worktree_add,worktree_remove}`,
 //! `conflicts.*`, `pr.*`, `prs.list`, `apps.{list,add,remove,open}`, and
@@ -246,6 +246,7 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "status" => handle_status(state),
         "items.list" => handle_items_list(state, req.params),
         "items.history" => handle_items_history(state, req.params),
+        "items.clear_history" => handle_items_clear_history(state),
         "items.dismiss" => handle_items_set_dismissed(state, req.params, true),
         "items.undismiss" => handle_items_set_dismissed(state, req.params, false),
         "accounts.list" => handle_accounts_list(state),
@@ -490,6 +491,11 @@ fn handle_items_history(state: &ServerState, params: serde_json::Value) -> Resul
     // as live ones, rather than needing a second, subtly different row widget.
     let scored = priority::score_all(&items, &state.rules, Utc::now());
     Ok(serde_json::to_value(scored).expect("Vec<ScoredItem> always serializes"))
+}
+
+fn handle_items_clear_history(state: &ServerState) -> Result<serde_json::Value> {
+    state.store.clear_history()?;
+    Ok(serde_json::Value::Null)
 }
 
 fn handle_items_set_dismissed(
@@ -1591,6 +1597,7 @@ mod tests {
             ci_status: gitsurveil_proto::CiStatus::None,
             raw_kind: "assign".into(),
             activity: None,
+            archived: false,
         };
         state.store.upsert_item(&item).unwrap();
 
@@ -1634,6 +1641,7 @@ mod tests {
             ci_status: gitsurveil_proto::CiStatus::None,
             raw_kind: "assign".into(),
             activity: None,
+            archived: false,
         }).unwrap();
 
         let params = serde_json::json!({ "id": "i1" });
@@ -1642,6 +1650,62 @@ mod tests {
 
         handle_items_set_dismissed(&state, params, false).unwrap();
         assert_eq!(state.store.open_items().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn clear_history_archives_dismissed_and_done() {
+        let state = test_state();
+        state.store.upsert_account(&AccountRef {
+            id: "acc-1".into(),
+            host: "github.com".into(),
+            api_base: "https://api.github.com".into(),
+            login: "octocat".into(),
+            auth_kind: AuthKind::Pat,
+        }).unwrap();
+        for (id, state_name) in [("open-1", "open"), ("done-1", "done"), ("dismissed-1", "dismissed")] {
+            state.store.upsert_item(&gitsurveil_proto::ActionItem {
+                id: id.into(),
+                account_id: "acc-1".into(),
+                kind: gitsurveil_proto::ItemKind::Assigned,
+                state: match state_name {
+                    "open" => gitsurveil_proto::ItemState::Open,
+                    _ => gitsurveil_proto::ItemState::Done,
+                },
+                repo: "acme/api".into(),
+                number: Some(1),
+                title: "t".into(),
+                url: "u".into(),
+                author: "a".into(),
+                created_at: "2026-08-13T12:00:00Z".into(),
+                updated_at: "2026-08-13T12:00:00Z".into(),
+                first_seen_at: "2026-08-13T12:00:00Z".into(),
+                last_seen_at: "2026-08-13T12:00:00Z".into(),
+                ci_status: gitsurveil_proto::CiStatus::None,
+                raw_kind: "assign".into(),
+                activity: None,
+                archived: false,
+            }).unwrap();
+        }
+        state.store.set_dismissed("dismissed-1", true).unwrap();
+
+        let resp = dispatch(
+            &state,
+            Request { id: 7, method: "items.clear_history".into(), params: serde_json::Value::Null },
+        )
+        .await;
+        assert!(resp.error.is_none());
+
+        assert_eq!(state.store.history_items(50).unwrap().len(), 0, "history is gone");
+        let open = state.store.open_items().unwrap();
+        assert_eq!(open.len(), 1, "open items survive");
+        assert_eq!(open[0].id, "open-1");
+        // History rows are archived, not deleted: the still-active dismissed
+        // item keeps its row, so the next poll can't re-add it to the
+        // Dashboard.
+        let all = state.store.items_for_account("acc-1").unwrap();
+        let archived_ids: Vec<&str> =
+            all.iter().filter(|i| i.archived).map(|i| i.id.as_str()).collect();
+        assert_eq!(archived_ids, vec!["done-1", "dismissed-1"]);
     }
 
     #[tokio::test]

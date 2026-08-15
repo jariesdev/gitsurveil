@@ -91,6 +91,7 @@ mod tests {
             ci_status: CiStatus::None,
             raw_kind: "review_requested".into(),
             activity: None,
+            archived: false,
         }
     }
 

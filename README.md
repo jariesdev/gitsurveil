@@ -242,7 +242,9 @@ opens the full window:
   to open the PR on GitHub (the menu names the provider, e.g. **Open in
   GitHub**) in your browser.
 - **History** — resolved and dismissed items, with the option to restore a
-  dismissal.
+  dismissal or clear all history at once. Clearing archives the items: they
+  disappear for good and never come back, even though they may still be open
+  on GitHub.
 - **Rules** — how scoring works, and what your configured rules do.
 - **Repository and Worktrees** — every repository discovered across your
   accounts, with account and organization filters. A single click on a row
@@ -319,6 +321,7 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `status` | Version, uptime, account count, open item count, top severity |
 | `items.list` | Open items, scored and ordered by priority |
 | `items.history` | Resolved and dismissed items |
+| `items.clear_history` | Archive every resolved and dismissed item — hidden from the Dashboard and history permanently (no undo) |
 | `items.dismiss` / `items.undismiss` | Hide or restore an item locally |
 | `accounts.list` | Configured accounts (never includes tokens) |
 | `accounts.add` | Validate a token and register an account |

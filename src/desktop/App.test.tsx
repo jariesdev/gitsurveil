@@ -6,9 +6,9 @@
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { RepoCatalog } from "../types";
+import type { RepoCatalog, ScoredItem } from "../types";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
@@ -70,6 +70,7 @@ const mockIpc = vi.hoisted(() => {
     appsList: vi.fn(),
     notificationsPrefs: vi.fn(),
     undismissItem: vi.fn(),
+    clearHistory: vi.fn(),
     listPullRequests: vi.fn(),
     prDetail: vi.fn(),
     pollNow: vi.fn(),
@@ -101,6 +102,7 @@ const mockIpc = vi.hoisted(() => {
   m.prDetail.mockRejectedValue(new Error("not opened"));
   m.pollNow.mockResolvedValue(undefined);
   m.undismissItem.mockResolvedValue(undefined);
+  m.clearHistory.mockResolvedValue(undefined);
   m.dismissItem.mockResolvedValue(undefined);
   m.openUrl.mockResolvedValue(undefined);
   m.reposAckNew.mockResolvedValue(1);
@@ -109,8 +111,15 @@ const mockIpc = vi.hoisted(() => {
 
 vi.mock("../ipc", () => mockIpc);
 
+let confirmSpy: { mockRestore: () => void } | undefined;
+
 beforeEach(() => {
   Object.values(mockIpc).forEach((fn) => fn.mockClear());
+});
+
+afterEach(() => {
+  confirmSpy?.mockRestore();
+  confirmSpy = undefined;
 });
 
 describe("App navigation", () => {
@@ -138,5 +147,82 @@ describe("App navigation", () => {
     expect(
       await screen.findByText("Open with… applications"),
     ).toBeTruthy();
+  });
+
+  it("clears all history after confirmation", async () => {
+    const user = userEvent.setup();
+    const resolved: ScoredItem = {
+      id: "done-1",
+      account_id: "acc-1",
+      kind: "review_requested",
+      state: "done",
+      repo: "acme/api",
+      number: 482,
+      title: "Fix the thing",
+      url: "https://github.com/acme/api/pull/482",
+      author: "someone",
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:00:00Z",
+      first_seen_at: "2026-08-01T00:00:00Z",
+      last_seen_at: "2026-08-01T00:00:00Z",
+      ci_status: "passing",
+      raw_kind: "review_requested",
+      score: 0,
+      severity: "info",
+      muted: false,
+    };
+    mockIpc.listHistory.mockResolvedValue([resolved]);
+    confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+
+    const historyNav = await screen.findByRole("button", { name: "History" });
+    await user.click(historyNav);
+
+    const clearButton = await screen.findByRole("button", {
+      name: "Clear all history",
+    });
+    await user.click(clearButton);
+
+    expect(mockIpc.clearHistory).toHaveBeenCalledTimes(1);
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining("can’t be undone"),
+    );
+  });
+
+  it("does not clear history when the confirmation is declined", async () => {
+    const user = userEvent.setup();
+    const resolved: ScoredItem = {
+      id: "done-1",
+      account_id: "acc-1",
+      kind: "review_requested",
+      state: "done",
+      repo: "acme/api",
+      number: 482,
+      title: "Fix the thing",
+      url: "https://github.com/acme/api/pull/482",
+      author: "someone",
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:00:00Z",
+      first_seen_at: "2026-08-01T00:00:00Z",
+      last_seen_at: "2026-08-01T00:00:00Z",
+      ci_status: "passing",
+      raw_kind: "review_requested",
+      score: 0,
+      severity: "info",
+      muted: false,
+    };
+    mockIpc.listHistory.mockResolvedValue([resolved]);
+    confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<App />);
+
+    const historyNav = await screen.findByRole("button", { name: "History" });
+    await user.click(historyNav);
+
+    const clearButton = await screen.findByRole("button", {
+      name: "Clear all history",
+    });
+    await user.click(clearButton);
+
+    expect(mockIpc.clearHistory).not.toHaveBeenCalled();
   });
 });

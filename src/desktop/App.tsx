@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  clearHistory,
   daemonStatus,
   listAccounts,
   listHistory,
@@ -242,28 +243,52 @@ function History({
     );
   }
   return (
-    <div className="h-full overflow-y-auto">
-      <ul>
-        {items.map((item) => (
-          <li key={item.id} className="flex items-center">
-            <div className="min-w-0 flex-1">
-              <ItemRow item={item} onOpen={() => void openUrl(item.url)} />
-            </div>
-            {item.state === "dismissed" && (
-              <button
-                type="button"
-                onClick={async () => {
-                  await undismissItem(item.id);
-                  onRefresh();
-                }}
-                className="mr-4 shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-[11px] dark:border-neutral-700"
-              >
-                Restore
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-neutral-200 px-6 py-3 dark:border-neutral-800">
+        <p className="text-xs text-neutral-500">
+          {items.length} resolved or dismissed
+        </p>
+        <button
+          type="button"
+          onClick={async () => {
+            if (
+              !confirm(
+                `Clear ${items.length} items from history? This can’t be undone.`,
+              )
+            ) {
+              return;
+            }
+            await clearHistory();
+            onRefresh();
+          }}
+          className="rounded border border-neutral-300 px-2.5 py-1 text-[11px] text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        >
+          Clear all history
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <ul>
+          {items.map((item) => (
+            <li key={item.id} className="flex items-center">
+              <div className="min-w-0 flex-1">
+                <ItemRow item={item} onOpen={() => void openUrl(item.url)} />
+              </div>
+              {item.state === "dismissed" && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await undismissItem(item.id);
+                    onRefresh();
+                  }}
+                  className="mr-4 shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-[11px] dark:border-neutral-700"
+                >
+                  Restore
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

@@ -534,6 +534,7 @@ impl RawNotification {
             ci_status: CiStatus::None,
             raw_kind: self.reason,
             activity: None,
+            archived: false,
         }
     }
 }
@@ -710,6 +711,7 @@ impl PrNode {
             ci_status,
             raw_kind: format!("{kind:?}"),
             activity: None,
+            archived: false,
         }
     }
 

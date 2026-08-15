@@ -86,7 +86,8 @@ impl Store {
                 last_seen_at   TEXT NOT NULL,
                 ci_status      TEXT NOT NULL,
                 raw_kind       TEXT NOT NULL,
-                activity       TEXT
+                activity       TEXT,
+                archived       INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_items_account ON items(account_id);
             CREATE INDEX IF NOT EXISTS idx_items_state ON items(state);
@@ -177,6 +178,19 @@ impl Store {
             .is_ok();
         if !has_activity {
             conn.execute_batch("ALTER TABLE items ADD COLUMN activity TEXT")?;
+        }
+        // v6: `items.archived` is the permanent tombstone "Clear all history"
+        // writes. Archived items are excluded from the Dashboard and history,
+        // and the poller never resurrects them, so a cleared item that is
+        // still open on GitHub can't come back on the next poll.
+        let has_archived = conn
+            .prepare("SELECT 1 FROM pragma_table_info('items') WHERE name = 'archived'")?
+            .query_row([], |_| Ok(()))
+            .is_ok();
+        if !has_archived {
+            conn.execute_batch(
+                "ALTER TABLE items ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+            )?;
         }
         conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?1)",
@@ -269,14 +283,20 @@ impl Store {
     /// Replaces the stored row for `item.id` (insert or full overwrite).
     /// Used by the poller after computing a diff — the diff itself is pure
     /// and doesn't touch storage (see `crate::github::diff`).
+    ///
+    /// `archived` is deliberately *not* part of the conflict update: it is a
+    /// permanent tombstone owned by the user's "Clear all history" action,
+    /// so a poll can never un-archive an item. The poller additionally skips
+    /// archived rows entirely (`should_preserve_local_state`), so this only
+    /// matters as a defensive guarantee.
     pub fn upsert_item(&self, item: &ActionItem) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO items (
                 id, account_id, kind, state, repo, number, title, url, author,
                 created_at, updated_at, first_seen_at, last_seen_at, ci_status,
-                raw_kind, activity
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                raw_kind, activity, archived
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
              ON CONFLICT(id) DO UPDATE SET
                 state = excluded.state,
                 title = excluded.title,
@@ -302,6 +322,7 @@ impl Store {
                 ci_status_to_str(item.ci_status),
                 item.raw_kind,
                 item.activity,
+                item.archived as i64,
             ],
         )?;
         Ok(())
@@ -329,14 +350,15 @@ impl Store {
         Ok(())
     }
 
-    /// All items currently stored for `account_id`, regardless of state —
-    /// the poller diffs against this full set (`specs/github-integration.md`).
+    /// All items currently stored for `account_id`, regardless of state or
+    /// archive status — the poller diffs against this full set
+    /// (`specs/github-integration.md`).
     pub fn items_for_account(&self, account_id: &str) -> Result<Vec<ActionItem>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
                     created_at, updated_at, first_seen_at, last_seen_at, ci_status,
-                    raw_kind, activity
+                    raw_kind, activity, archived
              FROM items WHERE account_id = ?1",
         )?;
         let rows = stmt.query_map(params![account_id], row_to_item)?;
@@ -344,15 +366,16 @@ impl Store {
             .map_err(Into::into)
     }
 
-    /// Open (non-done, non-dismissed) items across all accounts, for the
-    /// `items.list` API method and the `status` open-item count.
+    /// Open, non-archived items across all accounts, for the `items.list` API
+    /// method and the `status` open-item count. Done, dismissed, and archived
+    /// items are excluded — the Dashboard only shows what needs action.
     pub fn open_items(&self) -> Result<Vec<ActionItem>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
                     created_at, updated_at, first_seen_at, last_seen_at, ci_status,
-                    raw_kind, activity
-             FROM items i WHERE state = 'open' AND NOT EXISTS (
+                    raw_kind, activity, archived
+             FROM items i WHERE state = 'open' AND archived = 0 AND NOT EXISTS (
                 SELECT 1 FROM repositories r
                 WHERE r.account_id = i.account_id AND r.full_name = i.repo
                   AND r.notify_enabled = 0
@@ -364,14 +387,16 @@ impl Store {
     }
 
     /// Resolved and dismissed items, newest activity first — the desktop UI's
-    /// history view (`specs/desktop-ui.md`).
+    /// history view (`specs/desktop-ui.md`). Archived items are excluded: the
+    /// user cleared them for good, so they must not resurface here.
     pub fn history_items(&self, limit: usize) -> Result<Vec<ActionItem>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
                     created_at, updated_at, first_seen_at, last_seen_at, ci_status,
-                    raw_kind, activity
-             FROM items i WHERE state != 'open' AND NOT EXISTS (
+                    raw_kind, activity, archived
+             FROM items i WHERE state IN ('done', 'dismissed') AND archived = 0
+               AND NOT EXISTS (
                 SELECT 1 FROM repositories r
                 WHERE r.account_id = i.account_id AND r.full_name = i.repo
                   AND r.notify_enabled = 0
@@ -382,6 +407,21 @@ impl Store {
         let rows = stmt.query_map(params![limit as i64], row_to_item)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    /// Empties the History view (`items.clear_history`). Every resolved and
+    /// dismissed item is archived rather than deleted: archived items are
+    /// excluded from the Dashboard and history, and the poller never
+    /// resurrects them, so a dismissed item that is still open on GitHub can't
+    /// come back on the next poll (deleting the row would re-add it as `New`).
+    /// Callers confirm with the user first — archiving is permanent.
+    pub fn clear_history(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE items SET archived = 1 WHERE state IN ('done', 'dismissed')",
+            [],
+        )?;
+        Ok(())
     }
 
     // ---- etags -----------------------------------------------------------
@@ -960,6 +1000,7 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ActionItem> {
         ci_status: ci_status_from_str(&ci_status_str),
         raw_kind: row.get(14)?,
         activity: row.get(15)?,
+        archived: row.get(16)?,
     })
 }
 
@@ -1077,6 +1118,7 @@ mod tests {
             ci_status: CiStatus::Passing,
             raw_kind: "review_requested".into(),
             activity: None,
+            archived: false,
         }
     }
 
@@ -1312,6 +1354,47 @@ mod tests {
             1,
             "unmuting restores it with no data loss"
         );
+    }
+
+    #[test]
+    fn clear_history_archives_everything_and_keeps_open() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store.upsert_item(&sample_item("open-1")).unwrap();
+        store.upsert_item(&sample_item("done-1")).unwrap();
+        store.upsert_item(&sample_item("dismissed-1")).unwrap();
+        store.mark_item_done("done-1").unwrap();
+        store.set_dismissed("dismissed-1", true).unwrap();
+
+        store.clear_history().unwrap();
+
+        assert_eq!(store.history_items(50).unwrap().len(), 0, "history is gone");
+        let open = store.open_items().unwrap();
+        assert_eq!(open.len(), 1, "open items are untouched");
+        assert_eq!(open[0].id, "open-1");
+        // History rows are archived, not deleted: the dismissed item is still
+        // open on GitHub, and keeping the row as an archive is what stops the
+        // next poll from re-adding it to the Dashboard.
+        let all = store.items_for_account("acc-1").unwrap();
+        let archived_ids: Vec<&str> =
+            all.iter().filter(|i| i.archived).map(|i| i.id.as_str()).collect();
+        assert_eq!(archived_ids, vec!["done-1", "dismissed-1"]);
+    }
+
+    #[test]
+    fn history_items_exclude_archived_but_keep_dismissed() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store.upsert_item(&sample_item("dismissed-keep")).unwrap();
+        store.set_dismissed("dismissed-keep", true).unwrap();
+        let mut archived = sample_item("dismissed-archived");
+        archived.state = gitsurveil_proto::ItemState::Dismissed;
+        archived.archived = true;
+        store.upsert_item(&archived).unwrap();
+
+        let history = store.history_items(50).unwrap();
+        assert_eq!(history.len(), 1, "only the non-archived dismissed item shows");
+        assert_eq!(history[0].id, "dismissed-keep");
     }
 
     #[test]

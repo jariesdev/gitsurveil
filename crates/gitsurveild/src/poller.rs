@@ -167,6 +167,7 @@ async fn poll_account(
     let mut candidates = Vec::new();
     for (change_kind, mut item) in result.changes {
         let prev = previous_by_id.get(item.id.as_str()).copied();
+        let preserve = should_preserve_local_state(change_kind, prev.is_some_and(|p| p.archived));
         if change_kind != ChangeKind::New {
             // Preserve the original first_seen_at on updates/carries; the
             // GitHub client only knows "now" since it has no prior record.
@@ -175,7 +176,8 @@ async fn poll_account(
             }
         }
 
-        if newly_relevant(change_kind, &item, prev)
+        if !preserve
+            && newly_relevant(change_kind, &item, prev)
             && !muted_repos.contains(&item.repo)
             && !disabled_kinds.contains(&item.kind)
         {
@@ -183,11 +185,26 @@ async fn poll_account(
         }
 
         item.last_seen_at = now_rfc3339();
-        store.upsert_item(&item)?;
+        // Local lifecycle state beats GitHub's: a Carried item is unchanged,
+        // so leave the stored row (and any dismiss marker) untouched; an
+        // archived item was cleared for good and must never be resurrected —
+        // not even by new activity. Writing here would clobber `state` with
+        // the fetched item's `Open` (see `should_preserve_local_state`).
+        if !preserve {
+            store.upsert_item(&item)?;
+        }
     }
 
     for resolved_id in result.resolved_ids {
-        store.mark_item_done(&resolved_id)?;
+        // An archived item that later resolves upstream stays archived — the
+        // user cleared it permanently and must not see it resurface in
+        // history.
+        if !previous_by_id
+            .get(resolved_id.as_str())
+            .is_some_and(|p| p.archived)
+        {
+            store.mark_item_done(&resolved_id)?;
+        }
     }
 
     Ok((requested_interval, candidates))
@@ -241,6 +258,16 @@ impl ActivityFingerprint {
         }
         fingerprint
     }
+}
+
+/// Whether the poller must leave an item's stored row untouched. Returns
+/// `true` for `Carried` items — GitHub reports no change, so the local
+/// dismiss marker wins over the fetched item's `Open` state ("dismissed
+/// stays dismissed unless activity resumes it") — and for `archived` items
+/// regardless of activity: the user cleared them for good, so they are never
+/// resurrected, re-shown, or notified about again.
+fn should_preserve_local_state(change_kind: ChangeKind, prev_archived: bool) -> bool {
+    prev_archived || change_kind == ChangeKind::Carried
 }
 
 /// Whether a diffed item is worth considering for a notification. Only
@@ -312,6 +339,7 @@ mod tests {
             ci_status,
             raw_kind: "x".into(),
             activity: None,
+            archived: false,
         }
     }
 
@@ -407,5 +435,94 @@ mod tests {
             ActivityFingerprint::parse(Some("c:;u:")),
             ActivityFingerprint::default()
         );
+    }
+
+    #[test]
+    fn preserve_local_state_cases() {
+        assert!(should_preserve_local_state(ChangeKind::Carried, false), "carried keeps its row");
+        assert!(should_preserve_local_state(ChangeKind::Carried, true), "carried archived stays archived");
+        assert!(should_preserve_local_state(ChangeKind::Updated, true), "archived is immune to new activity");
+        assert!(should_preserve_local_state(ChangeKind::New, true), "archived never becomes New again");
+        assert!(!should_preserve_local_state(ChangeKind::Updated, false), "activity resurrects a dismissed item");
+        assert!(!should_preserve_local_state(ChangeKind::New, false), "brand-new items are written");
+    }
+
+    #[test]
+    fn dismissed_survives_an_unchanged_poll_but_activity_resurrects_it() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&AccountRef {
+            id: "acc-1".into(),
+            host: "github.com".into(),
+            api_base: "https://api.github.com".into(),
+            login: "octocat".into(),
+            auth_kind: gitsurveil_proto::AuthKind::Pat,
+        }).unwrap();
+        store.upsert_item(&item(ItemKind::ReviewRequested, CiStatus::None)).unwrap();
+        store.set_dismissed("id", true).unwrap();
+
+        // Poll 1: GitHub unchanged -> Carried. The poller skips the write, so
+        // the dismiss marker survives and the item stays out of the Dashboard.
+        let previous = store.items_for_account("acc-1").unwrap();
+        let result = diff(&previous, &[item(ItemKind::ReviewRequested, CiStatus::None)]);
+        assert_eq!(result.changes[0].0, ChangeKind::Carried);
+        for (kind, i) in result.changes {
+            let archived = previous.iter().any(|p| p.id == i.id && p.archived);
+            if !should_preserve_local_state(kind, archived) {
+                store.upsert_item(&i).unwrap();
+            }
+        }
+        assert!(store.open_items().unwrap().is_empty(), "dismissed survives an unchanged poll");
+
+        // Poll 2: `updated_at` advanced -> Updated. Dismissal is a local hide,
+        // so spec says activity resurrects the item into the Dashboard.
+        let previous = store.items_for_account("acc-1").unwrap();
+        let mut active = item(ItemKind::ReviewRequested, CiStatus::None);
+        active.updated_at = "2026-08-02T00:00:00Z".into();
+        let result = diff(&previous, &[active]);
+        assert_eq!(result.changes[0].0, ChangeKind::Updated);
+        for (kind, i) in result.changes {
+            let archived = previous.iter().any(|p| p.id == i.id && p.archived);
+            if !should_preserve_local_state(kind, archived) {
+                store.upsert_item(&i).unwrap();
+            }
+        }
+        assert_eq!(store.open_items().unwrap().len(), 1, "activity brings the item back");
+    }
+
+    #[test]
+    fn archived_item_never_resurrects_even_on_activity() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&AccountRef {
+            id: "acc-1".into(),
+            host: "github.com".into(),
+            api_base: "https://api.github.com".into(),
+            login: "octocat".into(),
+            auth_kind: gitsurveil_proto::AuthKind::Pat,
+        }).unwrap();
+        store.upsert_item(&item(ItemKind::ReviewRequested, CiStatus::None)).unwrap();
+        store.set_dismissed("id", true).unwrap();
+        store.clear_history().unwrap();
+
+        // New GitHub activity -> Updated, but the item is archived: the poller
+        // must skip the write so it can't resurface in the Dashboard or
+        // history.
+        let previous = store.items_for_account("acc-1").unwrap();
+        assert!(previous[0].archived);
+        let mut active = item(ItemKind::ReviewRequested, CiStatus::None);
+        active.updated_at = "2026-08-02T00:00:00Z".into();
+        let result = diff(&previous, &[active]);
+        assert_eq!(result.changes[0].0, ChangeKind::Updated);
+        for (kind, i) in result.changes {
+            let archived = previous.iter().any(|p| p.id == i.id && p.archived);
+            assert!(
+                should_preserve_local_state(kind, archived),
+                "archived items are never written back"
+            );
+            if !should_preserve_local_state(kind, archived) {
+                store.upsert_item(&i).unwrap();
+            }
+        }
+        assert!(store.open_items().unwrap().is_empty(), "archived never resurfaces");
+        assert!(store.history_items(50).unwrap().is_empty(), "archived never shows in history");
     }
 }
