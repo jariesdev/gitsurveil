@@ -60,8 +60,9 @@ export function Dashboard({
   const hiddenCount = items.length - visible.length;
 
   async function handleDismiss(id: string) {
+    // No local refresh needed: the dismiss command makes the Rust shell emit
+    // `items-changed`, and the app-level listener refetches once.
     await dismissItem(id);
-    onRefresh();
   }
 
   async function handlePoll() {

@@ -243,7 +243,8 @@ opens the full window:
   to open the PR on GitHub (the menu names the provider, e.g. **Open in
   GitHub**) in your browser.
 - **History** — resolved and dismissed items, with the option to restore a
-  dismissal or clear all history at once. Clearing archives the items: they
+  dismissal or clear all history at once. Restoring brings the item straight
+  back into the Dashboard and the popover. Clearing archives the items: they
   disappear for good and never come back, even though they may still be open
   on GitHub.
 - **Rules** — how scoring works, and what your configured rules do.

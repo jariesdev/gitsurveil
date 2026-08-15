@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { copyText } from "./desktop/clipboard";
 import { ContextMenu } from "./desktop/ContextMenu";
 import { daemonStatus, dismissItem, listItems, openMainWindow, openUrl } from "./ipc";
@@ -178,6 +179,20 @@ export function Popover() {
     void load();
   }, [load]);
 
+  // An item's state can change in another window — dismissing here, or
+  // restoring an item in the desktop UI's History — and all windows must
+  // agree. The Rust shell emits `items-changed` after every dismiss or
+  // restore command, so this popover refetches from the event alone and
+  // never on its own action (the event is the single refresh path).
+  useEffect(() => {
+    const unlisten = listen("items-changed", () => {
+      void load();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [load]);
+
   if (state.phase === "loading") {
     return (
       <Shell>
@@ -214,10 +229,10 @@ export function Popover() {
   const { items, status } = state;
 
   async function handleDismiss(id: string) {
+    // No local reload: the dismiss command makes the Rust shell emit
+    // `items-changed`, and the event listener above refetches — which also
+    // keeps the header count honest.
     await dismissItem(id);
-    // The dismissed item leaves the list on the next fetch, so reload instead
-    // of hand-removing it — keeps the count in the header honest too.
-    void load();
   }
 
   return (

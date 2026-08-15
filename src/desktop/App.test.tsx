@@ -4,13 +4,17 @@
  * uncaught React render error). Reproduces the exact reported bug.
  */
 
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { listen } from "@tauri-apps/api/event";
 import type { RepoCatalog, ScoredItem } from "../types";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
 
 const mockIpc = vi.hoisted(() => {
   const catalog: RepoCatalog = {
@@ -224,5 +228,24 @@ describe("App navigation", () => {
     await user.click(clearButton);
 
     expect(mockIpc.clearHistory).not.toHaveBeenCalled();
+  });
+
+  it("refreshes when the shell reports items changed elsewhere", async () => {
+    // The popover's dismiss runs the same daemon command; the Rust shell then
+    // emits `items-changed`, and the app must refetch so an open Dashboard
+    // drops the item without waiting for its own action.
+    mockIpc.listItems.mockResolvedValue([]);
+    render(<App />);
+    await waitFor(() => expect(mockIpc.listItems).toHaveBeenCalled());
+
+    const before = mockIpc.listItems.mock.calls.length;
+    const handler = vi.mocked(listen).mock.calls.at(-1)![1];
+    await act(async () => {
+      handler({ event: "items-changed", id: 0, payload: undefined });
+    });
+
+    await waitFor(() =>
+      expect(mockIpc.listItems.mock.calls.length).toBeGreaterThan(before),
+    );
   });
 });

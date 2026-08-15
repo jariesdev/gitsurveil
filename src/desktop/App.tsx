@@ -7,6 +7,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   clearHistory,
   daemonStatus,
@@ -88,6 +89,20 @@ export function App() {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // An item's state can change outside this window — dismissing it in the
+  // popover must remove it from an open Dashboard, restoring it in History
+  // must bring it back. The Rust shell emits `items-changed` after the
+  // daemon call succeeds, so we refetch once here instead of every window
+  // managing its own refresh.
+  useEffect(() => {
+    const unlisten = listen("items-changed", () => {
+      void load();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
   }, [load]);
 
   // The new-repositories modal is a main-window-open event, not a per-refresh
@@ -277,8 +292,10 @@ function History({
                 <button
                   type="button"
                   onClick={async () => {
+                    // The undismiss command emits `items-changed`, which
+                    // refreshes both History and the Dashboard via the
+                    // app-level listener — no local refresh needed.
                     await undismissItem(item.id);
-                    onRefresh();
                   }}
                   className="mr-4 shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-[11px] dark:border-neutral-700"
                 >

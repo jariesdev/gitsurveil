@@ -5,10 +5,15 @@
  * likely to hit first and the easiest one to get wrong.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Popover } from "./Popover";
+import { listen } from "@tauri-apps/api/event";
 import type { ScoredItem, StatusResult } from "./types";
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
 
 vi.mock("./ipc", () => ({
   listItems: vi.fn(),
@@ -177,7 +182,10 @@ describe("Popover", () => {
 
   it("dismisses an item from its row and the list refreshes", async () => {
     // The daemon drops the item after dismissal, so the second fetch returns
-    // nothing — the popover must reflect that instead of keeping the row.
+    // nothing — the popover must reflect that instead of keeping the row. The
+    // refresh is driven by the `items-changed` event (the popover no longer
+    // reloads itself), so the test fires the listener the way the Rust shell
+    // would after the dismiss command succeeds.
     vi.mocked(listItems)
       .mockResolvedValueOnce([item()])
       .mockResolvedValue([]);
@@ -192,7 +200,34 @@ describe("Popover", () => {
 
     await waitFor(() => {
       expect(dismissItem).toHaveBeenCalledWith("item-1");
-      expect(screen.getByText("All clear")).toBeInTheDocument();
+    });
+
+    const handler = vi.mocked(listen).mock.calls.at(-1)![1];
+    await act(async () => {
+      handler({ event: "items-changed", id: 0, payload: undefined });
+    });
+
+    expect(await screen.findByText("All clear")).toBeInTheDocument();
+  });
+
+  it("refetches when an item's state changes in the desktop UI", async () => {
+    // Restoring a dismissed item in History (or dismissing in the Dashboard)
+    // emits `items-changed`; the popover must show the restored item without
+    // waiting for its own action.
+    vi.mocked(listItems).mockResolvedValue([]);
+    vi.mocked(daemonStatus).mockResolvedValue(status);
+
+    render(<Popover />);
+    await waitFor(() => expect(vi.mocked(listItems)).toHaveBeenCalled());
+
+    const before = vi.mocked(listItems).mock.calls.length;
+    const handler = vi.mocked(listen).mock.calls.at(-1)![1];
+    await act(async () => {
+      handler({ event: "items-changed", id: 0, payload: undefined });
+    });
+
+    await waitFor(() => {
+      expect(vi.mocked(listItems).mock.calls.length).toBeGreaterThan(before);
     });
   });
 });

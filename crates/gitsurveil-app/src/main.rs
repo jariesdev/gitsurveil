@@ -218,6 +218,7 @@ fn open_main(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// daemon doesn't have.
 mod commands {
     use gitsurveil_proto::{AccountRef, ScoredItem, StatusResult};
+    use tauri::Emitter;
 
     /// Returns every open action item, scored and sorted by the daemon's
     /// priority engine, or an error string the UI renders as a "service
@@ -279,18 +280,32 @@ mod commands {
 
     /// Hides an item locally. GitHub activity on it will bring it back.
     #[tauri::command]
-    pub async fn dismiss_item(id: String) -> Result<(), String> {
+    pub async fn dismiss_item(app: tauri::AppHandle, id: String) -> Result<(), String> {
         crate::daemon::set_dismissed(&id, true)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        notify_items_changed(&app);
+        Ok(())
     }
 
     /// Restores a dismissed item.
     #[tauri::command]
-    pub async fn undismiss_item(id: String) -> Result<(), String> {
+    pub async fn undismiss_item(app: tauri::AppHandle, id: String) -> Result<(), String> {
         crate::daemon::set_dismissed(&id, false)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        notify_items_changed(&app);
+        Ok(())
+    }
+
+    /// Tells every open window that an item's local state changed, so each
+    /// refetches instead of showing a stale list. Emitted from the shared
+    /// `dismiss_item`/`undismiss_item` commands — a dismissal in the popover
+    /// must immediately remove the item from an open Dashboard, and a
+    /// restore in History must bring it back in the popover too. Windows
+    /// never refetch on their own action; the event is the one refresh path.
+    fn notify_items_changed(app: &tauri::AppHandle) {
+        let _ = app.emit("items-changed", ());
     }
 
     /// Validates a token and registers an account.
