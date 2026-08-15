@@ -219,8 +219,9 @@ needs you.
 
 An icon appears in your menu bar, colored by the most urgent thing waiting on
 you. Click it for the popover: everything currently open, most urgent first,
-with a dot per priority band. Click a row to open it on GitHub. Clicking
-elsewhere dismisses the popover.
+with a dot per priority band. Click a row to open it on GitHub, or hover a row
+to dismiss it (it disappears from the Dashboard too). Clicking elsewhere
+dismisses the popover.
 
 **Open GitSurveil** — from the popover header or the tray's right-click menu —
 opens the full window:

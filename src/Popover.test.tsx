@@ -14,11 +14,12 @@ vi.mock("./ipc", () => ({
   listItems: vi.fn(),
   daemonStatus: vi.fn(),
   openUrl: vi.fn(),
+  dismissItem: vi.fn(),
   closePopover: vi.fn(),
   openMainWindow: vi.fn(),
 }));
 
-const { listItems, daemonStatus } = await import("./ipc");
+const { listItems, daemonStatus, dismissItem } = await import("./ipc");
 
 const status: StatusResult = {
   version: "0.1.0",
@@ -56,6 +57,7 @@ describe("Popover", () => {
   beforeEach(() => {
     vi.mocked(listItems).mockReset();
     vi.mocked(daemonStatus).mockReset();
+    vi.mocked(dismissItem).mockReset();
   });
 
   it("renders items returned by the daemon", async () => {
@@ -170,6 +172,27 @@ describe("Popover", () => {
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("https://github.com/acme/api/pull/482");
+    });
+  });
+
+  it("dismisses an item from its row and the list refreshes", async () => {
+    // The daemon drops the item after dismissal, so the second fetch returns
+    // nothing — the popover must reflect that instead of keeping the row.
+    vi.mocked(listItems)
+      .mockResolvedValueOnce([item()])
+      .mockResolvedValue([]);
+    vi.mocked(daemonStatus).mockResolvedValue(status);
+
+    render(<Popover />);
+
+    const dismissButton = await screen.findByRole("button", {
+      name: "Dismiss Fix the thing",
+    });
+    fireEvent.click(dismissButton);
+
+    await waitFor(() => {
+      expect(dismissItem).toHaveBeenCalledWith("item-1");
+      expect(screen.getByText("All clear")).toBeInTheDocument();
     });
   });
 });

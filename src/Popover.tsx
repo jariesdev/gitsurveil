@@ -1,16 +1,16 @@
 /**
  * The notifications-only popover (`specs/menubar-ui.md`).
  *
- * Deliberately read-only: it lists what needs attention and opens items on
- * GitHub. Management features (filters, rules, PR actions) belong to the full
- * desktop UI, so this stays small enough to mount instantly every time the
- * webview is rebuilt after a tray click.
+ * Deliberately small: it lists what needs attention, opens items on GitHub,
+ * and dismisses them. Management features (filters, rules, PR actions) belong
+ * to the full desktop UI, so this stays small enough to mount instantly every
+ * time the webview is rebuilt after a tray click.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { copyText } from "./desktop/clipboard";
 import { ContextMenu } from "./desktop/ContextMenu";
-import { daemonStatus, listItems, openMainWindow, openUrl } from "./ipc";
+import { daemonStatus, dismissItem, listItems, openMainWindow, openUrl } from "./ipc";
 import { KIND_LABELS, type ScoredItem, type Severity, type StatusResult } from "./types";
 
 /** What the popover is currently showing. */
@@ -81,19 +81,22 @@ function CiDot({ status }: { status: ScoredItem["ci_status"] }) {
 }
 
 /** One row in the list. */
-function ItemRow({ item }: { item: ScoredItem }) {
+function ItemRow({ item, onDismiss }: { item: ScoredItem; onDismiss: () => void }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   return (
-    <>
+    <div
+      className="group relative flex items-center gap-2 border-b border-neutral-200 px-3 py-2 hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-800"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenu({ x: event.clientX, y: event.clientY });
+      }}
+    >
       <button
         type="button"
         onClick={() => void openUrl(item.url)}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          setMenu({ x: event.clientX, y: event.clientY });
-        }}
-        className="flex w-full flex-col gap-0.5 border-b border-neutral-200 px-3 py-2 text-left hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-800"
+        className="min-w-0 flex-1 text-left"
+        title={item.title}
       >
         <div className="flex items-center gap-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
           <SeverityDot severity={item.severity} muted={item.muted} />
@@ -109,6 +112,30 @@ function ItemRow({ item }: { item: ScoredItem }) {
         <div className="truncate text-[13px] text-neutral-900 dark:text-neutral-100">
           {item.title}
         </div>
+      </button>
+
+      {/* Floats in front of the row's content (absolute, so it takes no layout
+          space), shown only while the row is hovered. A solid chip keeps the
+          icon legible over whatever text runs beneath it. */}
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label={`Dismiss ${item.title}`}
+        className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-neutral-100 p-1 text-neutral-500 opacity-0 shadow-sm group-hover:opacity-100 hover:bg-neutral-500 hover:text-white dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-600 dark:hover:text-white"
+      >
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="block h-3 w-3"
+        >
+          <path d="M18 6 6 18" />
+          <path d="m6 6 12 12" />
+        </svg>
       </button>
 
       {menu && (
@@ -127,7 +154,7 @@ function ItemRow({ item }: { item: ScoredItem }) {
           ]}
         />
       )}
-    </>
+    </div>
   );
 }
 
@@ -186,6 +213,13 @@ export function Popover() {
 
   const { items, status } = state;
 
+  async function handleDismiss(id: string) {
+    await dismissItem(id);
+    // The dismissed item leaves the list on the next fetch, so reload instead
+    // of hand-removing it — keeps the count in the header honest too.
+    void load();
+  }
+
   return (
     <Shell>
       <header className="flex items-center justify-between border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
@@ -213,7 +247,7 @@ export function Popover() {
         <ul className="flex-1 overflow-y-auto">
           {items.map((item) => (
             <li key={item.id}>
-              <ItemRow item={item} />
+              <ItemRow item={item} onDismiss={() => void handleDismiss(item.id)} />
             </li>
           ))}
         </ul>
