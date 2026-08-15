@@ -79,6 +79,7 @@ const mockIpc = vi.hoisted(() => {
     prDetail: vi.fn(),
     pollNow: vi.fn(),
     dismissItem: vi.fn(),
+    addAccount: vi.fn(),
   };
   m.daemonStatus.mockResolvedValue({
     version: "0.1.0",
@@ -247,5 +248,53 @@ describe("App navigation", () => {
     await waitFor(() =>
       expect(mockIpc.listItems.mock.calls.length).toBeGreaterThan(before),
     );
+  });
+});
+
+describe("App onboarding", () => {
+  it("shows the welcome screen instead of the shell when no account exists", async () => {
+    mockIpc.listAccounts.mockResolvedValue([]);
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Welcome to GitSurveil" }),
+    ).toBeTruthy();
+    // No shell yet, so the sidebar navigation is absent.
+    expect(screen.queryByRole("button", { name: "Dashboard" })).toBeNull();
+  });
+
+  it("skip reveals the shell, whose dashboard CTA jumps to Accounts", async () => {
+    const user = userEvent.setup();
+    mockIpc.listAccounts.mockResolvedValue([]);
+    render(<App />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Skip for now" }),
+    );
+
+    expect(screen.getByText(/No account yet/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Add account" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Accounts" }),
+    ).toBeTruthy();
+  });
+
+  it("never shows onboarding once an account is configured", async () => {
+    mockIpc.listAccounts.mockResolvedValue([
+      {
+        id: "acc-1",
+        host: "github.com",
+        api_base: "https://api.github.com",
+        login: "ariesragingriverict",
+        auth_kind: "pat",
+      },
+    ]);
+    render(<App />);
+
+    expect(
+      await screen.findByRole("button", { name: "Dashboard" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("Welcome to GitSurveil")).toBeNull();
   });
 });

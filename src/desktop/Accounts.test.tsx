@@ -6,13 +6,14 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { Accounts } from "./Accounts";
-import { addAccount, reposSetNotify } from "../ipc";
+import { addAccount, openUrl, reposSetNotify } from "../ipc";
 import type { AccountRef, RepoCatalog, Repository } from "../types";
 
 vi.mock("../ipc", () => ({
   addAccount: vi.fn(),
   removeAccount: vi.fn(),
   reposSetNotify: vi.fn().mockResolvedValue({}),
+  openUrl: vi.fn(),
 }));
 
 const account: AccountRef = {
@@ -136,5 +137,26 @@ describe("Accounts add form", () => {
       ),
     );
     expect(onChange).toHaveBeenCalled();
+  });
+});
+
+describe("Accounts token helper", () => {
+  it("reveals scopes and the keychain note when expanded", () => {
+    render(<Accounts accounts={[]} catalog={catalog} onChange={() => {}} />);
+
+    fireEvent.click(screen.getByText("Where do I get a token?"));
+
+    expect(screen.getAllByText(/notifications/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/repo/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/OS keychain/).length).toBeGreaterThan(0);
+  });
+
+  it("opens the GitHub token page from the helper", () => {
+    render(<Accounts accounts={[]} catalog={catalog} onChange={() => {}} />);
+
+    fireEvent.click(screen.getByText("Where do I get a token?"));
+    fireEvent.click(screen.getByRole("button", { name: "Create a token on GitHub" }));
+
+    expect(openUrl).toHaveBeenCalledWith("https://github.com/settings/tokens");
   });
 });

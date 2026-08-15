@@ -33,6 +33,7 @@ import { Accounts } from "./Accounts";
 import { Dashboard } from "./Dashboard";
 import { ItemRow } from "./ItemRow";
 import { NewReposModal } from "./NewReposModal";
+import { Onboarding } from "./Onboarding";
 import { PullRequests } from "./PullRequests/PullRequests";
 import { Repos } from "./Repos";
 import { Rules } from "./Rules";
@@ -64,6 +65,11 @@ export function App() {
   const [view, setView] = useState<View>("dashboard");
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * "Skip for now" on the onboarding screen, for this window session. Not
+   * persisted: a user with no account gets oriented again on the next open.
+   */
+  const [skipOnboarding, setSkipOnboarding] = useState(false);
   /** Repos discovered but not yet acknowledged; non-empty opens the modal. */
   const [newRepos, setNewRepos] = useState<Repository[]>([]);
 
@@ -160,6 +166,15 @@ export function App() {
     );
   }
 
+  // A fresh install has no accounts, and every empty view reads misleading
+  // without one — replace the shell with the onboarding screen until an
+  // account exists (or the user skips it for this session).
+  if (data.accounts.length === 0 && !skipOnboarding) {
+    return (
+      <Onboarding onAdded={load} onSkip={() => setSkipOnboarding(true)} />
+    );
+  }
+
   return (
     <Shell>
       {newRepos.length > 0 && (
@@ -208,6 +223,7 @@ export function App() {
               items={data.items}
               accounts={data.accounts}
               onRefresh={() => void load()}
+              onOpenAccounts={() => setView("accounts")}
             />
           )}
           {view === "history" && (

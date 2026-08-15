@@ -37,10 +37,13 @@ export function Dashboard({
   items,
   accounts,
   onRefresh,
+  onOpenAccounts,
 }: {
   items: ScoredItem[];
   accounts: AccountRef[];
   onRefresh: () => void;
+  /** Jumps to the Accounts view for the "add your first account" empty state. */
+  onOpenAccounts: () => void;
 }) {
   const [groupBy, setGroupBy] = useState<GroupBy>("priority");
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
@@ -155,11 +158,28 @@ export function Dashboard({
 
       <div className="flex-1 overflow-y-auto">
         {groups.length === 0 ? (
-          <p className="p-10 text-center text-sm text-neutral-500">
-            {items.length === 0
-              ? "Nothing needs your attention."
-              : "No items match these filters."}
-          </p>
+          items.length === 0 && accounts.length === 0 ? (
+            <div className="p-10 text-center">
+              <p className="text-sm text-neutral-500">
+                No account yet — add one to start monitoring.
+              </p>
+              <button
+                type="button"
+                onClick={onOpenAccounts}
+                className="mt-3 rounded bg-neutral-900 px-3 py-1.5 text-sm text-white dark:bg-neutral-100 dark:text-neutral-900"
+              >
+                Add account
+              </button>
+            </div>
+          ) : items.length === 0 ? (
+            <p className="p-10 text-center text-sm text-neutral-500">
+              Nothing needs your attention.
+            </p>
+          ) : (
+            <p className="p-10 text-center text-sm text-neutral-500">
+              No items match these filters.
+            </p>
+          )
         ) : (
           groups.map((group) => (
             <section key={group.key}>

@@ -197,6 +197,14 @@ pick your provider (GitHub or GitHub Enterprise Server), paste the token, and
 add. GitHub needs nothing else; Enterprise additionally asks for its host and
 API base URL.
 
+The first time you open the window with no accounts configured, a welcome
+screen appears instead of the dashboard: a quick pitch of what GitSurveil does,
+with the add-account form right there — paste a token and you're monitoring.
+**Skip for now** hides it for that session; with no account configured it comes
+back the next time you open the window. The **Accounts** view offers the same
+form, with a collapsible "Where do I get a token?" helper and a direct link to
+the GitHub token page.
+
 To do it from the terminal instead, the daemon exposes a JSON API over a unix
 socket:
 
