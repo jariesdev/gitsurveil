@@ -19,6 +19,8 @@ mod daemon;
 mod popover;
 mod tray;
 
+use std::path::PathBuf;
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -108,6 +110,10 @@ fn main() {
             // is cheap, but a popover nobody clicks must give its webview back.
             app.manage(popover::IdleClock::default());
             popover::spawn_idle_teardown(app.handle().clone());
+            // Fire-and-forget: gets the daemon running (and registered to
+            // survive future logins) on every platform, without delaying the
+            // tray icon.
+            tauri::async_runtime::spawn(ensure_daemon_running());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -210,6 +216,90 @@ fn open_main(app: &tauri::AppHandle) -> tauri::Result<()> {
         });
     }
     window.set_focus()?;
+    Ok(())
+}
+
+/// Makes sure `gitsurveild` is up, registering and starting it if this is a
+/// fresh install (or a previous run's registration went missing).
+///
+/// Runs on every launch rather than only "first run": that makes it
+/// self-healing for the same failure mode (registration lost, binary moved)
+/// without a separate first-run flag to get out of sync with reality.
+async fn ensure_daemon_running() {
+    if daemon::status().await.is_ok() {
+        return;
+    }
+    let Some(sidecar) = daemon_sidecar_path() else {
+        // Dev builds run the daemon by hand (`cargo run -p gitsurveild`); a
+        // packaged app always has the sidecar next to it (`bundle-daemon.sh`).
+        return;
+    };
+
+    // Idempotent: writes/repoints the login registration. On macOS and Linux
+    // this also starts the daemon; on Windows it only registers the Run-key
+    // entry (`service.rs`), so the status check below still applies there.
+    //
+    // `install` blocks on `launchctl`/`systemctl`/`reg`, so it runs on a
+    // blocking thread rather than pulling tokio's `process` feature in just
+    // for this one startup call.
+    let install_sidecar = sidecar.clone();
+    let install_result =
+        tokio::task::spawn_blocking(move || std::process::Command::new(&install_sidecar).arg("install").output())
+            .await;
+    if let Ok(Err(e)) = install_result {
+        eprintln!("gitsurveil: could not run `gitsurveild install`: {e}");
+    }
+
+    // Give a just-started daemon a moment to bind its socket/pipe before
+    // deciding it needs a direct spawn too.
+    for _ in 0..5 {
+        if daemon::status().await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    if let Err(e) = spawn_daemon_detached(&sidecar) {
+        eprintln!("gitsurveil: could not start gitsurveild directly: {e}");
+    }
+}
+
+/// Path to the bundled `gitsurveild` sidecar, which Tauri places next to the
+/// main executable in every packaged build. `None` if it isn't there (dev
+/// builds, or a build that skipped `scripts/bundle-daemon.sh`).
+fn daemon_sidecar_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let name = format!("gitsurveild{}", std::env::consts::EXE_SUFFIX);
+    let path = dir.join(name);
+    path.exists().then_some(path)
+}
+
+/// Starts the daemon directly, detached from this process — the fallback for
+/// Windows, where `install` only writes the autostart registration and never
+/// starts anything itself.
+#[cfg(windows)]
+fn spawn_daemon_detached(sidecar: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    // DETACHED_PROCESS: survives this process exiting. CREATE_NO_WINDOW: no
+    // console flash, matching the `windows_subsystem = "windows"` app itself.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    std::process::Command::new(sidecar)
+        .arg("--foreground")
+        .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+        .spawn()?;
+    Ok(())
+}
+
+/// macOS/Linux fallback, for the rare case `install` wrote the registration
+/// but its own start-now step failed (e.g. `launchctl` reachable neither via
+/// `bootstrap` nor `load`, per `service.rs`).
+#[cfg(not(windows))]
+fn spawn_daemon_detached(sidecar: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new(sidecar)
+        .arg("--foreground")
+        .spawn()?;
     Ok(())
 }
 
