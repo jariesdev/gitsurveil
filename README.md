@@ -192,7 +192,10 @@ or remove the registration entirely with `gitsurveild uninstall`.
 
 ### 2. Add your GitHub account
 
-Easiest from the app: run it (step 3), open the window, and use **Accounts**.
+Easiest from the app: run it (step 3), open the window, and use **Accounts** —
+pick your provider (GitHub or GitHub Enterprise Server), paste the token, and
+add. GitHub needs nothing else; Enterprise additionally asks for its host and
+API base URL.
 
 To do it from the terminal instead, the daemon exposes a JSON API over a unix
 socket:

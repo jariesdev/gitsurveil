@@ -6,7 +6,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { Accounts } from "./Accounts";
-import { reposSetNotify } from "../ipc";
+import { addAccount, reposSetNotify } from "../ipc";
 import type { AccountRef, RepoCatalog, Repository } from "../types";
 
 vi.mock("../ipc", () => ({
@@ -76,5 +76,65 @@ describe("Accounts notify checklist", () => {
     const other: AccountRef = { ...account, id: "acc-2", login: "bob" };
     render(<Accounts accounts={[other]} catalog={catalog} onChange={() => {}} />);
     expect(screen.queryByText(/Notify me about/)).toBeNull();
+  });
+});
+
+describe("Accounts add form", () => {
+  it("submits github.com by default with the GitHub provider", async () => {
+    const onChange = vi.fn();
+    render(<Accounts accounts={[]} catalog={catalog} onChange={onChange} />);
+
+    // The Enterprise-only fields are hidden for the GitHub provider.
+    expect(screen.queryByLabelText("Enterprise host")).toBeNull();
+    expect(screen.queryByLabelText("API base URL")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText(/Personal access token/), {
+      target: { value: "ghp_123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+
+    await vi.waitFor(() =>
+      expect(addAccount).toHaveBeenCalledWith("github.com", "ghp_123", undefined),
+    );
+    expect(onChange).toHaveBeenCalled();
+  });
+
+  it("reveals Enterprise host and API base fields when Enterprise is selected", () => {
+    render(<Accounts accounts={[]} catalog={catalog} onChange={() => {}} />);
+
+    fireEvent.change(screen.getByLabelText("Provider"), {
+      target: { value: "enterprise" },
+    });
+
+    expect(screen.getByLabelText("Enterprise host")).toBeTruthy();
+    expect(screen.getByLabelText("API base URL")).toBeTruthy();
+  });
+
+  it("submits the Enterprise host and API base when Enterprise is selected", async () => {
+    const onChange = vi.fn();
+    render(<Accounts accounts={[]} catalog={catalog} onChange={onChange} />);
+
+    fireEvent.change(screen.getByLabelText("Provider"), {
+      target: { value: "enterprise" },
+    });
+    fireEvent.change(screen.getByLabelText("Enterprise host"), {
+      target: { value: "github.example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("API base URL"), {
+      target: { value: "https://github.example.com/api/v3" },
+    });
+    fireEvent.change(screen.getByLabelText(/Personal access token/), {
+      target: { value: "ghp_123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+
+    await vi.waitFor(() =>
+      expect(addAccount).toHaveBeenCalledWith(
+        "github.example.com",
+        "ghp_123",
+        "https://github.example.com/api/v3",
+      ),
+    );
+    expect(onChange).toHaveBeenCalled();
   });
 });
