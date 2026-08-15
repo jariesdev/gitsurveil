@@ -12,14 +12,16 @@ talks to GitHub directly with your own token, and no data goes anywhere else.
 
 ## Status
 
-**Early development.** Phases 1–7 of 9 are done: the daemon monitors GitHub,
-prioritizes what it finds, and notifies you; a menubar app shows what's
+**Early development.** Phases 1–7 and 9 of 9 are done: the daemon monitors
+GitHub, prioritizes what it finds, and notifies you; a menubar app shows what's
 pending; a desktop window provides the dashboard, history, rules, accounts,
 pull-request management, and a three-pane conflict resolver that lets you merge
 a conflicted PR from within the app. A **Repositories** pane discovers every
 repository across your accounts, flags the ones you haven't seen yet, and can
 clone any of them in the background — the local copies the conflict resolver
-works on.
+works on. The daemon also registers itself as a login service (a launchd agent
+on macOS, a systemd user unit on Linux, the per-user `Run` key on Windows), so
+monitoring starts at login whether or not the app is ever opened.
 
 | Phase | Feature | Status |
 |---|---|---|
@@ -31,10 +33,13 @@ works on.
 | 6 | PR management (create/update/close/merge, comments) | ✅ Done |
 | 7 | Conflict resolver (3-pane, Sublime Merge-style) | ✅ Done |
 | 8 | AI PR review (opt-in; Ollama or Claude) | Not started |
-| 9 | Service registration & packaging | Not started |
+| 9 | Service registration & packaging | ✅ Done |
 
-Because Phase 9 hasn't landed, the daemon does **not** yet start at login — you
-run it manually, and it stops when you close the terminal.
+The packaged app ships the daemon inside it and registers/starts it on every
+launch — idempotently, so a lost registration heals itself. `gitsurveild
+status` reports whether it is registered and whether it is currently answering;
+`gitsurveild install` and `gitsurveild uninstall` manage the registration by
+hand.
 
 ## What it monitors
 
@@ -117,7 +122,10 @@ These builds are not code-signed, so the first launch is blocked:
 - **macOS** — right-click the app, choose **Open**, then confirm.
 - **Windows** — SmartScreen: **More info → Run anyway**.
 
-The background service ships inside the app. To have it start at login:
+The background service ships inside the app. Launching the app registers and
+starts it automatically (every launch, idempotently). To manage the
+registration by hand — e.g. to have monitoring start at login before you ever
+open the app:
 
 ```bash
 # macOS, after dragging GitSurveil.app to /Applications
@@ -135,7 +143,7 @@ currently answering; `gitsurveild uninstall` removes the registration.
   `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - **Node.js 20+ and pnpm**, to build the app's frontend.
 - **macOS or Linux.** The Windows named-pipe transport is written but not yet
-  verified; it gets tested in Phase 9.
+  verified on real Windows hardware.
 - A **GitHub personal access token** with the `notifications` and `repo` scopes.
 
 ## Install
@@ -176,7 +184,8 @@ cargo run -p gitsurveild -- --foreground
 ```
 
 It stays attached to the terminal and logs what it's doing. Leave it running.
-(Login-time autostart is Phase 9; until then this is the only way to run it.)
+This is the development path; in a packaged install the daemon registers and
+starts itself at login (see "Install a release build").
 
 ### 1b. Stop the daemon
 
@@ -388,7 +397,7 @@ commits and comments never notify you. Items you've already seen never notify
 twice. If a single poll turns up more than three new items (say, after being
 offline), they collapse into one summary notification instead of a burst.
 
-Two current limitations, both temporary:
+Three current limitations, all temporary:
 
 - **Clicking a notification doesn't open the item.** macOS only supports action
   labels for unbundled binaries. Use the menubar popover to click through to
