@@ -990,11 +990,14 @@ struct RepoWorktreeAddParams {
 }
 
 /// Params for `repos.worktree_remove`. `name` is the worktree's registered
-/// name (`git worktree list`), not its path.
+/// name (`git worktree list`), not its path. When `force` is true the
+/// dirty-check is skipped (uncommitted changes are discarded).
 #[derive(Debug, Deserialize)]
 struct RepoWorktreeRemoveParams {
     repo: String,
     name: String,
+    #[serde(default)]
+    force: bool,
 }
 
 /// The registered clone path for `repo`, or a Config error explaining that
@@ -1056,7 +1059,7 @@ async fn handle_repos_worktree_add(
 
 /// `repos.worktree_remove` — unregisters a worktree and removes its working
 /// directory. Keeps the checked-out branch, and refuses dirty worktrees and
-/// `gitsurveil-*` conflict sessions.
+/// `gitsurveil-*` conflict sessions unless `force` is true.
 async fn handle_repos_worktree_remove(
     state: &ServerState,
     params: serde_json::Value,
@@ -1071,7 +1074,8 @@ async fn handle_repos_worktree_remove(
     }
     let clone_path = tracked_clone_path(state, &params.repo)?;
     let name = params.name.clone();
-    run_git_op(move || crate::worktrees::remove(&clone_path, &name)).await?;
+    let force = params.force;
+    run_git_op(move || crate::worktrees::remove(&clone_path, &name, force)).await?;
     Ok(serde_json::Value::Null)
 }
 

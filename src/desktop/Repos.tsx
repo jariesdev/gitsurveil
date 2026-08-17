@@ -38,6 +38,7 @@ import type {
   WorktreesResult,
 } from "../types";
 import { ContextMenu } from "./ContextMenu";
+import { ConfirmDialog } from "./ConfirmDialog";
 import {
   applyRepoFilters,
   hasActiveRepoFilters,
@@ -89,6 +90,17 @@ export function Repos({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The worktree whose dirty error is showing, so the force-delete button
+   *  knows what to target. Cleared when the error is dismissed. */
+  const [dirtyWorktree, setDirtyWorktree] = useState<{
+    repo: Repository;
+    worktree: WorktreeInfo;
+  } | null>(null);
+  /** When non-null, the force-delete confirm dialog is open. */
+  const [confirmTarget, setConfirmTarget] = useState<{
+    repo: Repository;
+    worktree: WorktreeInfo;
+  } | null>(null);
   // The registered "Open with…" apps. Fetched on mount: this pane remounts on
   // every navigation (`ViewErrorBoundary` is keyed by view), so it stays fresh
   // without burdening the window-wide load with rows only this pane uses.
@@ -179,17 +191,22 @@ export function Repos({
 
   /** Removes one worktree of a repo; the branch itself survives. */
   const handleWorktreeDelete = useCallback(
-    async (repo: Repository, worktree: WorktreeInfo) => {
+    async (repo: Repository, worktree: WorktreeInfo, force = false) => {
       setError(null);
+      setDirtyWorktree(null);
       try {
-        await reposWorktreeRemove(repo.full_name, worktree.name);
+        await reposWorktreeRemove(repo.full_name, worktree.name, force);
         // The worktree list is owned by the expanded `WorktreesSection`, so
         // refresh it in place — otherwise the deleted row lingers until the
         // section is collapsed and re-expanded.
         worktreeReloads.current.get(repo.full_name)?.();
         onChange();
       } catch (e) {
-        setError(String(e));
+        const msg = String(e);
+        setError(msg);
+        if (!force && msg.includes("uncommitted changes or untracked files")) {
+          setDirtyWorktree({ repo, worktree });
+        }
       }
     },
     [onChange],
@@ -298,9 +315,21 @@ export function Repos({
 
       <div className="flex-1 overflow-y-auto">
         {error && (
-          <p role="alert" className="border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-            {error}
-          </p>
+          <div
+            role="alert"
+            className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+          >
+            <span className="min-w-0 flex-1">{error}</span>
+            {dirtyWorktree && (
+              <button
+                type="button"
+                onClick={() => setConfirmTarget(dirtyWorktree)}
+                className="shrink-0 rounded bg-red-600 px-2 py-0.5 text-[11px] text-white hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-800"
+              >
+                Force delete
+              </button>
+            )}
+          </div>
         )}
 
         {accounts.length === 0 ? (
@@ -443,6 +472,20 @@ export function Repos({
               },
             },
           ]}
+        />
+      )}
+
+      {confirmTarget && (
+        <ConfirmDialog
+          title="Force delete worktree?"
+          message="This worktree has uncommitted changes and/or untracked files. They will be permanently lost."
+          confirmLabel="Force delete"
+          onConfirm={() => {
+            const { repo, worktree } = confirmTarget;
+            setConfirmTarget(null);
+            void handleWorktreeDelete(repo, worktree, true);
+          }}
+          onClose={() => setConfirmTarget(null)}
         />
       )}
     </div>

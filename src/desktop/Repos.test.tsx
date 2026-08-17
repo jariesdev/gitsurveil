@@ -3,7 +3,7 @@
  * whole window) for the shapes the daemon can actually hand back.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { Repos } from "./Repos";
 import {
@@ -44,7 +44,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: dialog.open }));
 // Clear call histories (not implementations) so a lazy-load assertion like
 // `reposWorktrees not called` isn't polluted by an earlier test's expand.
 beforeEach(() => {
-  vi.clearAllMocks();
+    vi.clearAllMocks();
 });
 
 function repository(overrides: Partial<Repository> = {}): Repository {
@@ -165,6 +165,99 @@ describe("Repos", () => {
     }
   });
 
+  it("shows a Force delete button when worktree delete fails with dirty error", async () => {
+    const worktrees: WorktreesResult = {
+      worktrees: [
+        { name: "wt-acme-web-feature", path: "/tmp/acme/web/wt-feature", branch: "feature", head: "abc1234" },
+      ],
+      branches: ["main", "feature"],
+    };
+    vi.mocked(reposWorktrees).mockResolvedValue(worktrees);
+    vi.mocked(reposWorktreeRemove).mockRejectedValue(
+      "the worktree at /tmp/acme/web/wt-feature has uncommitted changes or untracked files — commit or stash them before deleting",
+    );
+    render(<Repos catalog={catalog} accounts={[account]} onChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees for acme/web" }));
+    await screen.findByText("feature");
+
+    fireEvent.contextMenu(screen.getByText(/wt-feature/));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete worktree" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(screen.getByText(/uncommitted changes/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Force delete" })).toBeTruthy();
+  });
+
+  it("opens confirm dialog on Force delete click and calls force delete on confirm", async () => {
+    const worktrees: WorktreesResult = {
+      worktrees: [
+        { name: "wt-acme-web-feature", path: "/tmp/acme/web/wt-feature", branch: "feature", head: "abc1234" },
+      ],
+      branches: ["main", "feature"],
+    };
+    vi.mocked(reposWorktrees).mockResolvedValue(worktrees);
+    vi.mocked(reposWorktreeRemove)
+      .mockRejectedValueOnce(
+        "the worktree at /tmp/acme/web/wt-feature has uncommitted changes or untracked files — commit or stash them before deleting",
+      )
+      .mockResolvedValueOnce(undefined);
+    const onChange = vi.fn();
+    render(<Repos catalog={catalog} accounts={[account]} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees for acme/web" }));
+    await screen.findByText("feature");
+
+    // Trigger dirty error.
+    fireEvent.contextMenu(screen.getByText(/wt-feature/));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete worktree" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Force delete" })).toBeTruthy());
+
+    // Open confirm dialog.
+    fireEvent.click(screen.getByRole("button", { name: "Force delete" }));
+    const dialog = await screen.findByRole("dialog", { name: "Force delete worktree?" });
+    expect(dialog.textContent).toContain("permanently lost");
+
+    // Confirm — scope to the dialog so we don't match the error bar button.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Force delete" }));
+    await waitFor(() =>
+      expect(reposWorktreeRemove).toHaveBeenCalledWith(
+        "acme/web",
+        "wt-acme-web-feature",
+        true,
+      ),
+    );
+    expect(onChange).toHaveBeenCalled();
+  });
+
+  it("cancels force delete when confirm dialog is dismissed", async () => {
+    const worktrees: WorktreesResult = {
+      worktrees: [
+        { name: "wt-acme-web-feature", path: "/tmp/acme/web/wt-feature", branch: "feature", head: "abc1234" },
+      ],
+      branches: ["main", "feature"],
+    };
+    vi.mocked(reposWorktrees).mockResolvedValue(worktrees);
+    vi.mocked(reposWorktreeRemove).mockRejectedValueOnce(
+      "the worktree at /tmp/acme/web/wt-feature has uncommitted changes or untracked files — commit or stash them before deleting",
+    );
+    render(<Repos catalog={catalog} accounts={[account]} onChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees for acme/web" }));
+    await screen.findByText("feature");
+
+    fireEvent.contextMenu(screen.getByText(/wt-feature/));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete worktree" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Force delete" })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "Force delete" }));
+    await screen.findByRole("dialog", { name: "Force delete worktree?" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Force delete worktree?" })).toBeNull(),
+    );
+    // Only the initial (failed) call — no force call.
+    expect(reposWorktreeRemove).toHaveBeenCalledTimes(1);
+  });
+
   it("renders the daemon's real catalog data without crashing", () => {
     // Snapshot of the user's actual `repositories`/`orgs` rows (minus the
     // SQLite 0/1 ints, which serde emits as real booleans). Guards against a
@@ -279,13 +372,18 @@ describe("Repos", () => {
     fireEvent.click(screen.getByRole("button", { name: "Worktrees for acme/web" }));
     await screen.findByText("feature");
 
+    vi.mocked(reposWorktreeRemove).mockResolvedValue(undefined);
     fireEvent.contextMenu(screen.getByText(/wt-feature/));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete worktree" }));
 
-    await waitFor(() =>
-      expect(reposWorktreeRemove).toHaveBeenCalledWith("acme/web", "wt-acme-web-feature"),
-    );
-    expect(onChange).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(reposWorktreeRemove).toHaveBeenCalledWith(
+        "acme/web",
+        "wt-acme-web-feature",
+        false,
+      );
+      expect(onChange).toHaveBeenCalled();
+    });
     // The deleted row is removed from the list in place.
     await waitFor(() =>
       expect(screen.queryByText(/wt-feature/)).toBeNull(),

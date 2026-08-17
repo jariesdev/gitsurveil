@@ -175,8 +175,9 @@ pub fn add(clone_path: &Path, branch: &str, path: &str) -> Result<WorktreeInfo> 
 /// The checked-out branch is kept — the worktree is only unregistered and its
 /// files removed, matching `git worktree remove`. A worktree with uncommitted
 /// changes or untracked files is refused, as is any `gitsurveil-*` conflict
-/// session.
-pub fn remove(clone_path: &Path, name: &str) -> Result<()> {
+/// session. Pass `force` to skip the dirty-check (uncommitted changes are
+/// silently discarded, matching `git worktree remove --force`).
+pub fn remove(clone_path: &Path, name: &str, force: bool) -> Result<()> {
     let repo = Repository::open(clone_path)?;
     if name.starts_with(WORKTREE_PREFIX) {
         return Err(DaemonError::Config(format!(
@@ -189,14 +190,16 @@ pub fn remove(clone_path: &Path, name: &str) -> Result<()> {
         ))
     })?;
 
-    let wt_path = worktree.path().to_path_buf();
-    let wt = Repository::open(&wt_path)?;
-    if !wt.statuses(None)?.iter().next().is_none() {
-        return Err(DaemonError::Config(format!(
-            "the worktree at {} has uncommitted changes or untracked files — \
-             commit or stash them before deleting",
-            wt_path.display()
-        )));
+    if !force {
+        let wt_path = worktree.path().to_path_buf();
+        let wt = Repository::open(&wt_path)?;
+        if !wt.statuses(None)?.iter().next().is_none() {
+            return Err(DaemonError::Config(format!(
+                "the worktree at {} has uncommitted changes or untracked files — \
+                 commit or stash them before deleting",
+                wt_path.display()
+            )));
+        }
     }
 
     let mut prune = WorktreePruneOptions::new();
@@ -477,7 +480,7 @@ mod tests {
         let clone = fixture();
         let target = clone.parent().unwrap().join("wt-acme-api-feature");
         add(&clone, "feature", target.to_str().unwrap()).unwrap();
-        remove(&clone, "wt-acme-api-feature").unwrap();
+        remove(&clone, "wt-acme-api-feature", false).unwrap();
         assert!(!target.exists(), "worktree directory must be removed");
         let repo = Repository::open(&clone).unwrap();
         assert!(
@@ -497,16 +500,36 @@ mod tests {
         let target = clone.parent().unwrap().join("wt-acme-api-feature");
         add(&clone, "feature", target.to_str().unwrap()).unwrap();
         std::fs::write(target.join("untracked.txt"), "dirty\n").unwrap();
-        let err = remove(&clone, "wt-acme-api-feature").unwrap_err();
+        let err = remove(&clone, "wt-acme-api-feature", false).unwrap_err();
         assert!(err.to_string().contains("uncommitted changes or untracked files"));
         assert!(target.exists(), "a refused removal must not delete the worktree");
         cleanup(&clone);
     }
 
     #[test]
+    fn remove_force_skips_dirty_check() {
+        let clone = fixture();
+        let target = clone.parent().unwrap().join("wt-acme-api-feature");
+        add(&clone, "feature", target.to_str().unwrap()).unwrap();
+        std::fs::write(target.join("untracked.txt"), "dirty\n").unwrap();
+        remove(&clone, "wt-acme-api-feature", true).unwrap();
+        assert!(!target.exists(), "force removal must delete the dirty worktree");
+        let repo = Repository::open(&clone).unwrap();
+        assert!(
+            repo.find_worktree("wt-acme-api-feature").is_err(),
+            "worktree registration must be pruned"
+        );
+        assert!(
+            repo.find_branch("feature", BranchType::Local).is_ok(),
+            "the checked-out branch survives a force removal"
+        );
+        cleanup(&clone);
+    }
+
+    #[test]
     fn remove_refuses_unknown_names() {
         let clone = fixture();
-        let err = remove(&clone, "nope").unwrap_err();
+        let err = remove(&clone, "nope", false).unwrap_err();
         assert!(err.to_string().contains("no worktree named `nope`"));
         cleanup(&clone);
     }
@@ -514,7 +537,7 @@ mod tests {
     #[test]
     fn remove_refuses_conflict_session_worktrees() {
         let clone = fixture();
-        let err = remove(&clone, "gitsurveil-acme-api").unwrap_err();
+        let err = remove(&clone, "gitsurveil-acme-api", false).unwrap_err();
         assert!(err.to_string().contains("conflict-session worktree"));
         cleanup(&clone);
     }

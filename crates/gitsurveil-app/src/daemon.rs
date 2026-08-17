@@ -275,10 +275,13 @@ pub async fn repos_worktree_add(repo: &str, branch: &str, path: &str) -> Result<
 
 /// Removes a worktree (unregisters it and deletes its working directory),
 /// keeping the checked-out branch. Refuses dirty worktrees and conflict
-/// sessions.
-pub async fn repos_worktree_remove(repo: &str, name: &str) -> Result<()> {
-    let _: serde_json::Value =
-        call("repos.worktree_remove", serde_json::json!({ "repo": repo, "name": name })).await?;
+/// sessions. Pass `force` to skip the dirty-check.
+pub async fn repos_worktree_remove(repo: &str, name: &str, force: bool) -> Result<()> {
+    let _: serde_json::Value = call(
+        "repos.worktree_remove",
+        serde_json::json!({ "repo": repo, "name": name, "force": force }),
+    )
+    .await?;
     Ok(())
 }
 

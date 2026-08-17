@@ -582,10 +582,15 @@ mod commands {
             .map_err(|e| e.to_string())
     }
 
-    /// Removes a worktree (keeping its branch); refuses dirty worktrees.
+    /// Removes a worktree (keeping its branch); refuses dirty worktrees
+    /// unless `force` is true.
     #[tauri::command]
-    pub async fn repos_worktree_remove(repo: String, name: String) -> Result<(), String> {
-        crate::daemon::repos_worktree_remove(&repo, &name)
+    pub async fn repos_worktree_remove(
+        repo: String,
+        name: String,
+        force: bool,
+    ) -> Result<(), String> {
+        crate::daemon::repos_worktree_remove(&repo, &name, force)
             .await
             .map_err(|e| e.to_string())
     }

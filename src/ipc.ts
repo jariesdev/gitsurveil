@@ -203,9 +203,13 @@ export function reposWorktreeAdd(
   return invoke<WorktreeInfo>("repos_worktree_add", { repo, branch, path });
 }
 
-/** Removes a worktree (keeping its branch); refuses dirty worktrees. */
-export function reposWorktreeRemove(repo: string, name: string): Promise<void> {
-  return invoke<void>("repos_worktree_remove", { repo, name });
+/** Removes a worktree (keeping its branch); refuses dirty worktrees unless `force` is true. */
+export function reposWorktreeRemove(
+  repo: string,
+  name: string,
+  force?: boolean,
+): Promise<void> {
+  return invoke<void>("repos_worktree_remove", { repo, name, force: force ?? false });
 }
 
 /** Asks the daemon to poll now rather than waiting for the next cycle. */
