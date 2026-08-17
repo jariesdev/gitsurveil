@@ -22,6 +22,8 @@ vi.mock("./ipc", () => ({
   dismissItem: vi.fn(),
   closePopover: vi.fn(),
   openMainWindow: vi.fn(),
+  browsersList: vi.fn().mockResolvedValue([]),
+  openUrlWithBrowser: vi.fn(),
 }));
 
 const { listItems, daemonStatus, dismissItem } = await import("./ipc");

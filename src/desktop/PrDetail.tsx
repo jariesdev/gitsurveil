@@ -8,7 +8,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  browsersList,
   openUrl,
+  openUrlWithBrowser,
   prBranches,
   prClose,
   prComment,
@@ -22,7 +24,7 @@ import {
 } from "../ipc";
 import { renderMarkdown } from "../markdown";
 import { copyText } from "./clipboard";
-import { ContextMenu } from "./ContextMenu";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import type {
   Conversation,
   MergeMethod,
@@ -745,14 +747,73 @@ function Badge({ children }: { children: React.ReactNode }) {
 
 /** Renders sanitized markdown (see src/markdown.ts). Clicks on links open
  * the system browser via `openUrl` instead of navigating the webview; a
- * right-click offers Copy link / Open in browser. */
+ * right-click offers Copy link / Open in Browser submenu. */
 function Markdown({ source }: { source: string }) {
   const [menu, setMenu] = useState<{ x: number; y: number; href: string } | null>(null);
+  const browsersRef = useRef<string[] | null>(null);
+  const [browsersLoaded, setBrowsersLoaded] = useState(false);
 
   const hrefOf = (event: { target: EventTarget | null }): string | null => {
     const anchor = (event.target as HTMLElement).closest("a");
     return anchor?.getAttribute("href") ?? null;
   };
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    const href = hrefOf(e);
+    if (!href) return;
+    e.preventDefault();
+    if (!browsersLoaded) {
+      void browsersList()
+        .then((list) => {
+          browsersRef.current = list;
+          setBrowsersLoaded(true);
+        })
+        .catch(() => {
+          browsersRef.current = [];
+          setBrowsersLoaded(true);
+        });
+    }
+    setMenu({ x: e.clientX, y: e.clientY, href });
+  };
+
+  const isHttp = menu && /^https?:\/\//.test(menu.href);
+  const contextItems: ContextMenuItem[] = [
+    {
+      label: "Copy link",
+      onSelect: () => {
+        if (!menu) return;
+        void copyText(menu.href);
+        setMenu(null);
+      },
+    },
+    ...(isHttp
+      ? [
+          {
+            label: "Open in Browser",
+            children: [
+              {
+                label: "Default Browser",
+                onSelect: () => {
+                  if (!menu) return;
+                  void openUrl(menu.href);
+                  setMenu(null);
+                },
+              },
+              ...(browsersLoaded && browsersRef.current && browsersRef.current.length > 0
+                ? browsersRef.current.map((name) => ({
+                    label: name,
+                    onSelect: () => {
+                      if (!menu) return;
+                      void openUrlWithBrowser(menu.href, name);
+                      setMenu(null);
+                    },
+                  }))
+                : []),
+            ],
+          },
+        ]
+      : []),
+  ];
 
   return (
     <>
@@ -764,12 +825,7 @@ function Markdown({ source }: { source: string }) {
           e.preventDefault();
           if (/^https?:\/\//.test(href)) void openUrl(href);
         }}
-        onContextMenu={(e) => {
-          const href = hrefOf(e);
-          if (!href) return;
-          e.preventDefault();
-          setMenu({ x: e.clientX, y: e.clientY, href });
-        }}
+        onContextMenu={handleContextMenu}
         dangerouslySetInnerHTML={{ __html: renderMarkdown(source) }}
       />
       {menu && (
@@ -777,26 +833,7 @@ function Markdown({ source }: { source: string }) {
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
-          items={[
-            {
-              label: "Copy link",
-              onSelect: () => {
-                void copyText(menu.href);
-                setMenu(null);
-              },
-            },
-            ...(/^https?:\/\//.test(menu.href)
-              ? [
-                  {
-                    label: "Open in browser",
-                    onSelect: () => {
-                      void openUrl(menu.href);
-                      setMenu(null);
-                    },
-                  },
-                ]
-              : []),
-          ]}
+          items={contextItems}
         />
       )}
     </>

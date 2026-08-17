@@ -7,11 +7,19 @@
  * time the webview is rebuilt after a tray click.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { copyText } from "./desktop/clipboard";
-import { ContextMenu } from "./desktop/ContextMenu";
-import { daemonStatus, dismissItem, listItems, openMainWindow, openUrl } from "./ipc";
+import { ContextMenu, type ContextMenuItem } from "./desktop/ContextMenu";
+import {
+  browsersList,
+  daemonStatus,
+  dismissItem,
+  listItems,
+  openMainWindow,
+  openUrl,
+  openUrlWithBrowser,
+} from "./ipc";
 import { KIND_LABELS, type ScoredItem, type Severity, type StatusResult } from "./types";
 
 /** What the popover is currently showing. */
@@ -84,14 +92,60 @@ function CiDot({ status }: { status: ScoredItem["ci_status"] }) {
 /** One row in the list. */
 function ItemRow({ item, onDismiss }: { item: ScoredItem; onDismiss: () => void }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const browsersRef = useRef<string[] | null>(null);
+  const [browsersLoaded, setBrowsersLoaded] = useState(false);
+
+  const handleContextMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    if (!browsersLoaded) {
+      void browsersList()
+        .then((list) => {
+          browsersRef.current = list;
+          setBrowsersLoaded(true);
+        })
+        .catch(() => {
+          browsersRef.current = [];
+          setBrowsersLoaded(true);
+        });
+    }
+    setMenu({ x: event.clientX, y: event.clientY });
+  };
+
+  const contextItems: ContextMenuItem[] = [
+    {
+      label: "Open in Browser",
+      children: [
+        {
+          label: "Default Browser",
+          onSelect: () => {
+            void openUrl(item.url);
+            setMenu(null);
+          },
+        },
+        ...(browsersLoaded && browsersRef.current && browsersRef.current.length > 0
+          ? browsersRef.current.map((name) => ({
+              label: name,
+              onSelect: () => {
+                void openUrlWithBrowser(item.url, name);
+                setMenu(null);
+              },
+            }))
+          : []),
+      ],
+    },
+    {
+      label: "Copy URL",
+      onSelect: () => {
+        void copyText(item.url);
+        setMenu(null);
+      },
+    },
+  ];
 
   return (
     <div
       className="group relative flex items-center gap-2 border-b border-neutral-200 px-3 py-2 hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-800"
-      onContextMenu={(event) => {
-        event.preventDefault();
-        setMenu({ x: event.clientX, y: event.clientY });
-      }}
+      onContextMenu={handleContextMenu}
     >
       <button
         type="button"
@@ -144,15 +198,7 @@ function ItemRow({ item, onDismiss }: { item: ScoredItem; onDismiss: () => void 
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
-          items={[
-            {
-              label: "Copy URL",
-              onSelect: () => {
-                void copyText(item.url);
-                setMenu(null);
-              },
-            },
-          ]}
+          items={contextItems}
         />
       )}
     </div>

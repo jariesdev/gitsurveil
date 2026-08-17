@@ -65,6 +65,20 @@ export function openUrl(url: string): Promise<void> {
 }
 
 /**
+ * Lists installed system browsers by checking for known `.app` bundles in
+ * standard Application directories. Returns display names like
+ * `"Google Chrome"`, `"Safari"`, etc.
+ */
+export function browsersList(): Promise<string[]> {
+  return invoke<string[]>("browsers_list");
+}
+
+/** Opens `url` in the named browser (e.g. `"Google Chrome"`). */
+export function openUrlWithBrowser(url: string, browser: string): Promise<void> {
+  return invoke<void>("open_url_with_browser", { url, browser });
+}
+
+/**
  * Dismisses the popover. The window is hidden (not destroyed) so the next
  * tray click reuses the warm webview; the Rust shell reclaims it after an
  * idle timeout.

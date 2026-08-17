@@ -47,6 +47,8 @@ fn main() {
             commands::list_items,
             commands::daemon_status,
             commands::open_url,
+            commands::browsers_list,
+            commands::open_url_with_browser,
             commands::close_popover,
             commands::open_main_window,
             commands::list_history,
@@ -333,6 +335,56 @@ mod commands {
             .open_url(url, None::<&str>)
             .map_err(|e| e.to_string())?;
         close_popover(app).await
+    }
+
+    /// Lists installed system browsers by checking for known `.app` bundles in
+    /// standard Application directories. Used by context-menu submenus to let
+    /// the user pick a specific browser instead of the OS default.
+    #[tauri::command]
+    pub async fn browsers_list() -> Result<Vec<String>, String> {
+        let browsers = [
+            "Safari",
+            "Google Chrome",
+            "Firefox",
+            "Microsoft Edge",
+            "Brave Browser",
+            "Arc",
+            "Vivaldi",
+            "Opera",
+            "Chromium",
+        ];
+        let app_dirs: Vec<std::path::PathBuf> = [
+            Some(std::path::PathBuf::from("/Applications")),
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join("Applications")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        let mut found = Vec::new();
+        for browser in browsers {
+            for dir in &app_dirs {
+                if dir.join(format!("{browser}.app")).is_dir() {
+                    found.push(browser.to_string());
+                    break;
+                }
+            }
+        }
+        found.sort();
+        Ok(found)
+    }
+
+    /// Opens `url` in the specified browser using `open -a` on macOS. The
+    /// browser name must match the `.app` bundle name (e.g. "Google Chrome").
+    #[tauri::command]
+    pub async fn open_url_with_browser(url: String, browser: String) -> Result<(), String> {
+        std::process::Command::new("open")
+            .args(["-a", &browser, &url])
+            .spawn()
+            .map_err(|e| format!("failed to open {browser}: {e}"))?;
+        Ok(())
     }
 
     /// Dismisses the popover: hides it (webview stays warm for the next tray

@@ -1,9 +1,10 @@
 /** One row of the dashboard or history list. */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { KIND_LABELS, type ScoredItem, type Severity } from "../types";
+import { browsersList, openUrl, openUrlWithBrowser } from "../ipc";
 import { copyText } from "./clipboard";
-import { ContextMenu } from "./ContextMenu";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 
 /** Dot color per severity band, matching the tray icon palette. */
 const SEVERITY_DOT: Record<Severity, string> = {
@@ -36,14 +37,60 @@ export function ItemRow({
   onDismiss?: () => void;
 }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const browsersRef = useRef<string[] | null>(null);
+  const [browsersLoaded, setBrowsersLoaded] = useState(false);
+
+  const handleContextMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    if (!browsersLoaded) {
+      void browsersList()
+        .then((list) => {
+          browsersRef.current = list;
+          setBrowsersLoaded(true);
+        })
+        .catch(() => {
+          browsersRef.current = [];
+          setBrowsersLoaded(true);
+        });
+    }
+    setMenu({ x: event.clientX, y: event.clientY });
+  };
+
+  const contextItems: ContextMenuItem[] = [
+    {
+      label: "Open in Browser",
+      children: [
+        {
+          label: "Default Browser",
+          onSelect: () => {
+            void openUrl(item.url);
+            setMenu(null);
+          },
+        },
+        ...(browsersLoaded && browsersRef.current && browsersRef.current.length > 0
+          ? browsersRef.current.map((name) => ({
+              label: name,
+              onSelect: () => {
+                void openUrlWithBrowser(item.url, name);
+                setMenu(null);
+              },
+            }))
+          : []),
+      ],
+    },
+    {
+      label: "Copy URL",
+      onSelect: () => {
+        void copyText(item.url);
+        setMenu(null);
+      },
+    },
+  ];
 
   return (
     <div
       className="group flex items-center gap-3 border-b border-neutral-200 px-4 py-2 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50"
-      onContextMenu={(event) => {
-        event.preventDefault();
-        setMenu({ x: event.clientX, y: event.clientY });
-      }}
+      onContextMenu={handleContextMenu}
     >
       <span
         className={`h-2 w-2 shrink-0 rounded-full ${SEVERITY_DOT[item.severity]} ${
@@ -112,15 +159,7 @@ export function ItemRow({
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
-          items={[
-            {
-              label: "Copy URL",
-              onSelect: () => {
-                void copyText(item.url);
-                setMenu(null);
-              },
-            },
-          ]}
+          items={contextItems}
         />
       )}
     </div>

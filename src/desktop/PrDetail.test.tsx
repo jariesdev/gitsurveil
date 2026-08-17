@@ -22,6 +22,8 @@ vi.mock("../ipc", () => ({
   prClose: vi.fn(),
   prMerge: vi.fn(),
   openUrl: vi.fn(),
+  browsersList: vi.fn().mockResolvedValue([]),
+  openUrlWithBrowser: vi.fn(),
 }));
 
 const ipc = await import("../ipc");
