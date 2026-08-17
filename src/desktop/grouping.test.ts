@@ -69,6 +69,52 @@ describe("applyFilters", () => {
     const found = applyFilters(items, { ...NO_FILTERS, accountId: "acc-2" });
     expect(found.map((i) => i.id)).toEqual(["b"]);
   });
+
+  it("filters by repos when repos array is non-empty", () => {
+    const items = [
+      item({ id: "a", repo: "acme/api" }),
+      item({ id: "b", repo: "acme/web" }),
+      item({ id: "c", repo: "acme/api" }),
+    ];
+    const found = applyFilters(items, { ...NO_FILTERS, repos: ["acme/api"] });
+    expect(found.map((i) => i.id)).toEqual(["a", "c"]);
+  });
+
+  it("passes all items when repos array is empty", () => {
+    const items = [
+      item({ id: "a", repo: "acme/api" }),
+      item({ id: "b", repo: "acme/web" }),
+    ];
+    const found = applyFilters(items, { ...NO_FILTERS, repos: [] });
+    expect(found.map((i) => i.id)).toEqual(["a", "b"]);
+  });
+
+  it("combines repo filter with search — repo narrows first, search within", () => {
+    const items = [
+      item({ id: "a", repo: "acme/api", title: "Fix login" }),
+      item({ id: "b", repo: "acme/api", title: "Add tests" }),
+      item({ id: "c", repo: "acme/web", title: "Fix login" }),
+    ];
+    const found = applyFilters(items, {
+      ...NO_FILTERS,
+      repos: ["acme/api"],
+      search: "login",
+    });
+    expect(found.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  it("combines repos with multiple selections as OR within repos", () => {
+    const items = [
+      item({ id: "a", repo: "acme/api" }),
+      item({ id: "b", repo: "acme/web" }),
+      item({ id: "c", repo: "acme/mobile" }),
+    ];
+    const found = applyFilters(items, {
+      ...NO_FILTERS,
+      repos: ["acme/api", "acme/web"],
+    });
+    expect(found.map((i) => i.id)).toEqual(["a", "b"]);
+  });
 });
 
 describe("groupItems", () => {

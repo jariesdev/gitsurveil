@@ -247,8 +247,8 @@ dismisses the popover.
 opens the full window:
 
 - **Dashboard** — items grouped by priority (or by type), with search and
-  filters by account, type, and severity. Dismiss anything you don't want to
-  see, or force an immediate check with **Check now**.
+  filters by account, **repository**, type, and severity. Dismiss anything you
+  don't want to see, or force an immediate check with **Check now**.
 - **Pull Requests** — your PRs across all accounts, with their live state:
   draft, review decision, CI, and mergeability. Filter by status (Open is the
   default; Closed, Merged, or All re-query the daemon), account, repository,

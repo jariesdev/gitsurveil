@@ -33,6 +33,12 @@ export interface Filters {
   kind: ItemKind | "";
   /** Empty means "any severity". */
   severity: Severity | "";
+  /**
+   * Selected repositories (owner/name strings). An empty array means
+   * "all repos". When non-empty only items whose `repo` is in the set
+   * are included.
+   */
+  repos: string[];
 }
 
 /** Filters with nothing selected — the dashboard's initial state. */
@@ -41,6 +47,7 @@ export const NO_FILTERS: Filters = {
   accountId: "",
   kind: "",
   severity: "",
+  repos: [],
 };
 
 /** Applies `filters` to `items`, preserving the daemon's ordering. */
@@ -50,6 +57,7 @@ export function applyFilters(items: ScoredItem[], filters: Filters): ScoredItem[
     if (filters.accountId && item.account_id !== filters.accountId) return false;
     if (filters.kind && item.kind !== filters.kind) return false;
     if (filters.severity && item.severity !== filters.severity) return false;
+    if (filters.repos.length > 0 && !filters.repos.includes(item.repo)) return false;
     if (needle) {
       const haystack = `${item.title} ${item.repo}`.toLowerCase();
       if (!haystack.includes(needle)) return false;
