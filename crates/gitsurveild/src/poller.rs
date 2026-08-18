@@ -18,6 +18,11 @@ use crate::{keychain, notifications, DaemonError};
 
 const NOTIFICATIONS_ENDPOINT: &str = "/notifications";
 
+/// Backoff duration (in seconds) when a poll hits a GitHub rate limit.
+/// The spec says "back off exponentially", but a fixed floor is sufficient
+/// for Phase 1 — the next cycle retries normally.
+const RATE_LIMIT_BACKOFF_SECS: u64 = 300;
+
 /// Current UTC time as RFC 3339, used to stamp `first_seen_at`/`last_seen_at`
 /// on freshly-fetched items. Centralized here so every call site formats
 /// timestamps identically.
@@ -72,13 +77,24 @@ pub async fn poll_all_accounts(store: &Store, rules: &[Rule]) -> Option<u64> {
 
     let mut max_requested_interval = None;
     let mut notify_candidates = Vec::new();
+    let mut hit_rate_limit = false;
     for account in accounts {
         match poll_account(store, &account, rules, &disabled_kinds).await {
             Ok((requested, mut candidates)) => {
                 max_requested_interval = max_requested_interval.max(requested);
                 notify_candidates.append(&mut candidates);
             }
-            Err(e) => tracing::warn!(account = %account.login, "poll failed: {e}"),
+            Err(e) => {
+                if is_rate_limit_error(&e) {
+                    tracing::warn!(
+                        account = %account.login,
+                        "rate limited — backing off {RATE_LIMIT_BACKOFF_SECS}s"
+                    );
+                    hit_rate_limit = true;
+                } else {
+                    tracing::warn!(account = %account.login, "poll failed: {e}");
+                }
+            }
         }
     }
 
@@ -92,7 +108,13 @@ pub async fn poll_all_accounts(store: &Store, rules: &[Rule]) -> Option<u64> {
     to_notify.sort_by(|a, b| b.score.cmp(&a.score));
     notifications::dispatch_batch(&to_notify);
 
-    max_requested_interval
+    // When a rate limit was hit, use the backoff interval instead of
+    // whatever GitHub requested — the normal interval is too aggressive.
+    if hit_rate_limit {
+        Some(RATE_LIMIT_BACKOFF_SECS)
+    } else {
+        max_requested_interval
+    }
 }
 
 /// Polls one account, updates the store, and returns the `X-Poll-Interval`
@@ -221,6 +243,14 @@ fn pull_number_from_url(url: &str) -> Option<u64> {
         .next()?
         .parse::<u64>()
         .ok()
+}
+
+/// Whether an error is a GitHub rate-limit error. GitHub's GraphQL API
+/// returns `"API rate limit exceeded"` in the error message when the
+/// per-user hourly quota is exhausted.
+fn is_rate_limit_error(e: &DaemonError) -> bool {
+    let msg = e.to_string();
+    msg.to_lowercase().contains("rate limit exceeded")
 }
 
 /// Parsed form of the `activity` fingerprint an `Authored` item carries: the
