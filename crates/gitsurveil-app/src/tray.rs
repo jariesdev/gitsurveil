@@ -42,9 +42,8 @@ fn icon_bytes(severity: Severity) -> &'static [u8] {
 
 /// Applies `severity`'s icon to the tray.
 ///
-/// Only the idle icon is a macOS template image. Template images are forced to
-/// a single system-managed color, which would discard exactly the information
-/// the other four icons exist to convey.
+/// None of the icons are macOS template images: each carries explicit colour
+/// so the severity is legible regardless of menu-bar theme.
 pub fn apply(app: &AppHandle, severity: Severity) {
     let Some(tray) = app.tray_by_id(crate::TRAY_ID) else {
         return;
@@ -52,7 +51,7 @@ pub fn apply(app: &AppHandle, severity: Severity) {
     match Image::from_bytes(icon_bytes(severity)) {
         Ok(image) => {
             let _ = tray.set_icon(Some(image));
-            let _ = tray.set_icon_as_template(severity == Severity::Idle);
+            let _ = tray.set_icon_as_template(false);
         }
         Err(e) => tracing_warn(&format!("could not decode tray icon: {e}")),
     }

@@ -31,9 +31,8 @@ if command -v pnpm >/dev/null 2>&1; then
   echo "32x32.png 128x128.png 128x128@2x.png icon.icns icon.ico"
 fi
 
-# Tray, one per severity band (specs/priority-engine.md). Idle is black so
-# macOS can treat it as a template image and tint it for the menu bar; the
-# rest carry explicit colour, which template images would discard.
+# Tray, one per severity band (specs/priority-engine.md). Idle is green to
+# convey "all clear" at a glance; the rest carry escalating urgency colours.
 render_tray() {
   sed "s/__COLOR__/$2/g" tray.svg > "/tmp/tray-$1.svg"
   rsvg-convert -w 512 -h 512 "/tmp/tray-$1.svg" -o "tray-$1.png"
@@ -41,7 +40,7 @@ render_tray() {
   echo "tray-$1.png"
 }
 
-render_tray idle     "#000000"
+render_tray idle     "#3fb950"
 render_tray info     "#8c8c91"
 render_tray normal   "#3884ff"
 render_tray high     "#ff9500"
