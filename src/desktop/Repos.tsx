@@ -19,6 +19,7 @@ import {
   appsList,
   appsOpen,
   openUrl,
+  revealInFileManager,
   reposClone,
   reposCloneStatus,
   reposRefresh,
@@ -38,6 +39,7 @@ import type {
   WorktreesResult,
 } from "../types";
 import { ContextMenu } from "./ContextMenu";
+import { copyText } from "./clipboard";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   applyRepoFilters,
@@ -48,6 +50,16 @@ import {
   type RepoFilters,
 } from "./repoFilters";
 import { usePersistentState } from "./usePersistentState";
+
+/** The native file-manager label and action for the current platform. */
+const fileManagerAction = (() => {
+  const ua = navigator.userAgent;
+  if (ua.includes("Macintosh") || ua.includes("Mac OS"))
+    return { label: "Open in Finder", supported: true as const };
+  if (ua.includes("Windows"))
+    return { label: "Open in Explorer", supported: true as const };
+  return { label: "", supported: false as const };
+})();
 
 /** One tracked background clone, keyed by job id. */
 interface ActiveJob {
@@ -405,6 +417,28 @@ export function Repos({
                 setMenu(null);
               },
             },
+            ...(menu.repo.clone_path
+              ? [
+                  {
+                    label: "Copy path",
+                    onSelect: () => {
+                      setMenu(null);
+                      void copyText(menu.repo.clone_path!);
+                    },
+                  },
+                  ...(fileManagerAction.supported
+                    ? [
+                        {
+                          label: fileManagerAction.label,
+                          onSelect: () => {
+                            setMenu(null);
+                            void revealInFileManager(menu.repo.clone_path!);
+                          },
+                        },
+                      ]
+                    : []),
+                ]
+              : []),
             ...(menu.repo.tracked
               ? [
                   {
@@ -461,6 +495,24 @@ export function Repos({
                         void appsOpen(app.command, wtMenu.worktree.path);
                       },
                     })),
+                  },
+                ]
+              : []),
+            {
+              label: "Copy path",
+              onSelect: () => {
+                setWtMenu(null);
+                void copyText(wtMenu.worktree.path);
+              },
+            },
+            ...(fileManagerAction.supported
+              ? [
+                  {
+                    label: fileManagerAction.label,
+                    onSelect: () => {
+                      setWtMenu(null);
+                      void revealInFileManager(wtMenu.worktree.path);
+                    },
                   },
                 ]
               : []),

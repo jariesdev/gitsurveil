@@ -90,6 +90,7 @@ fn main() {
             commands::apps_add,
             commands::apps_remove,
             commands::apps_open,
+            commands::reveal_in_file_manager,
             commands::conflict_prepare,
             commands::conflict_file,
             commands::conflict_save,
@@ -866,6 +867,31 @@ mod commands {
     #[tauri::command]
     pub async fn apps_open(command: String, path: String) -> Result<(), String> {
         crate::daemon::apps_open(&command, &path).await.map_err(|e| e.to_string())
+    }
+
+    /// Reveals `path` in the native file manager (Finder on macOS, Explorer on
+    /// Windows). No-op on other platforms — the frontend should never call this
+    /// on Linux.
+    #[tauri::command]
+    pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .args(["-R", &path])
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("explorer")
+                .args(["/select,", &path])
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        #[allow(unreachable_code)]
+        Err("reveal_in_file_manager is not supported on this platform".into())
     }
 
     // ---- conflict resolution (`specs/conflict-resolver.md`) --------------

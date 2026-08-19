@@ -376,6 +376,11 @@ export function appsOpen(command: string, path: string): Promise<void> {
   return invoke<void>("apps_open", { command, path });
 }
 
+/** Reveals `path` in the native file manager (Finder / Explorer). */
+export function revealInFileManager(path: string): Promise<void> {
+  return invoke<void>("reveal_in_file_manager", { path });
+}
+
 // ---- conflict resolution (`specs/conflict-resolver.md`) ------------------
 // All of these act on the daemon's temp worktree — the user's local clone is
 // never touched.
