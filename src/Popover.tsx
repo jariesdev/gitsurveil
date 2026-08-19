@@ -20,6 +20,8 @@ import {
   openUrl,
   openUrlWithBrowser,
 } from "./ipc";
+import { useDebouncedCallback } from "./hooks/useDebouncedCallback";
+import { useInterval } from "./hooks/useInterval";
 import { KIND_LABELS, type ScoredItem, type Severity, type StatusResult } from "./types";
 
 /** What the popover is currently showing. */
@@ -221,9 +223,16 @@ export function Popover() {
     }
   }, []);
 
+  // Debounced version used by the auto-refresh interval and event listener.
+  const debouncedLoad = useDebouncedCallback(load, 500);
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Auto-refresh: re-read items from SQLite every 5 seconds so the popover
+  // stays current even when no dismiss/restore events fire.
+  useInterval(() => void debouncedLoad(), 5000);
 
   // An item's state can change in another window — dismissing here, or
   // restoring an item in the desktop UI's History — and all windows must
@@ -232,12 +241,12 @@ export function Popover() {
   // never on its own action (the event is the single refresh path).
   useEffect(() => {
     const unlisten = listen("items-changed", () => {
-      void load();
+      void debouncedLoad();
     });
     return () => {
       void unlisten.then((fn) => fn());
     };
-  }, [load]);
+  }, [debouncedLoad]);
 
   if (state.phase === "loading") {
     return (

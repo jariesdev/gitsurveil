@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listPullRequests, openUrl, reposList } from "../../ipc";
+import { useDebouncedCallback } from "../../hooks/useDebouncedCallback";
 import { copyText } from "../clipboard";
 import { ContextMenu } from "../ContextMenu";
 import type {
@@ -93,6 +94,15 @@ export function PullRequests({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Raw search input value — updates instantly on every keystroke. The
+   * debounced setter below flushes it into `filters.search` after 300 ms
+   * of inactivity.
+   */
+  const [search, setSearch] = useState(() => filters.search);
+  const debouncedSetSearch = useDebouncedCallback((value: string) => {
+    setFilters({ ...filters, search: value });
+  }, 300);
   /** The PR whose detail pane is open, if any. */
   const [selected, setSelected] = useState<{ repo: string; number: number } | null>(
     null,
@@ -169,8 +179,11 @@ export function PullRequests({
         <header className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
           <input
             type="search"
-            value={filters.search}
-            onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              debouncedSetSearch(e.target.value);
+            }}
             placeholder="Search title or repository"
             aria-label="Search"
             className="min-w-48 flex-1 rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"

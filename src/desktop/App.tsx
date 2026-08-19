@@ -21,6 +21,8 @@ import {
   reposNew,
   undismissItem,
 } from "../ipc";
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
+import { useInterval } from "../hooks/useInterval";
 import type {
   AccountRef,
   RepoCatalog,
@@ -93,9 +95,19 @@ export function App() {
     }
   }, []);
 
+  // Debounced version used by the auto-refresh interval and event listener.
+  // 500 ms debounce coalesces rapid back-to-back calls (e.g. an event firing
+  // right after an interval tick) into a single fetch.
+  const debouncedLoad = useDebouncedCallback(load, 500);
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Auto-refresh: re-read the item list from SQLite every 5 seconds so the
+  // dashboard stays current even when no events fire. Only reads from the
+  // local database — no external API calls are made.
+  useInterval(() => void debouncedLoad(), 5000);
 
   // An item's state can change outside this window — dismissing it in the
   // popover must remove it from an open Dashboard, restoring it in History
@@ -104,12 +116,12 @@ export function App() {
   // managing its own refresh.
   useEffect(() => {
     const unlisten = listen("items-changed", () => {
-      void load();
+      void debouncedLoad();
     });
     return () => {
       void unlisten.then((fn) => fn());
     };
-  }, [load]);
+  }, [debouncedLoad]);
 
   // The new-repositories modal is a main-window-open event, not a per-refresh
   // one: fetched once on mount so the modal doesn't keep popping back up over

@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dismissItem, openUrl, pollNow } from "../ipc";
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import {
   KIND_LABELS,
   SEVERITY_LABELS,
@@ -48,6 +49,16 @@ export function Dashboard({
   const [groupBy, setGroupBy] = useState<GroupBy>("priority");
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [busy, setBusy] = useState(false);
+  /**
+   * Raw search input value — updates instantly on every keystroke for a
+   * responsive feel. The debounced setter below flushes it into
+   * `filters.search` after 300 ms of inactivity, which is what actually
+   * drives the filtering.
+   */
+  const [search, setSearch] = useState("");
+  const debouncedSetSearch = useDebouncedCallback((value: string) => {
+    setFilters((prev) => ({ ...prev, search: value }));
+  }, 300);
   /**
    * The PR whose detail pane is open, if any. Carries `id` alongside
    * `repo`/`number` because a single PR can produce more than one row — e.g.
@@ -111,8 +122,11 @@ export function Dashboard({
       <header className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
         <input
           type="search"
-          value={filters.search}
-          onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            debouncedSetSearch(e.target.value);
+          }}
           placeholder="Search title or repository"
           aria-label="Search"
           className="min-w-48 flex-1 rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
