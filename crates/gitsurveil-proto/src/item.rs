@@ -132,6 +132,19 @@ pub struct ActionItem {
     /// The original GitHub reason/type string, kept for debugging and to
     /// support future priority rules without a schema change.
     pub raw_kind: String,
+    /// The item's `updated_at` at the moment it was dismissed — the
+    /// GitHub-time watermark that splits later activity into "already seen"
+    /// and "arrived while dismissed". `None` if never dismissed (or restored).
+    /// Never compared against local time (`specs/github-integration.md` §
+    /// Clock skew) — comparisons stay entirely within GitHub timestamps.
+    pub dismissed_updated_at: Option<String>,
+    /// Local time of the dismissal, for display only ("dismissed 3h ago").
+    /// Never compared against `dismissed_updated_at` or any GitHub timestamp.
+    pub dismissed_at: Option<String>,
+    /// CI status at the moment of dismissal, so a pass→fail transition is
+    /// recoverable — `Check` carries no timestamp, so the current status
+    /// alone can't show whether it changed since dismissal.
+    pub dismissed_ci_status: Option<CiStatus>,
     /// Daemon-internal fingerprint of the activity that makes this item
     /// qualify (e.g. the set of comments and unresolved threads behind an
     /// `Authored` item). Compared across polls to detect qualifying

@@ -91,6 +91,9 @@ mod tests {
             last_seen_at: "2026-08-13T12:00:00Z".into(),
             ci_status: CiStatus::None,
             raw_kind: "x".into(),
+            dismissed_updated_at: None,
+            dismissed_at: None,
+            dismissed_ci_status: None,
             activity: None,
             archived: false,
         };

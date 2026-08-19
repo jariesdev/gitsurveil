@@ -368,6 +368,9 @@ mod tests {
             last_seen_at: "2026-08-01T00:00:00Z".into(),
             ci_status,
             raw_kind: "x".into(),
+            dismissed_updated_at: None,
+            dismissed_at: None,
+            dismissed_ci_status: None,
             activity: None,
             archived: false,
         }
@@ -488,7 +491,7 @@ mod tests {
             auth_kind: gitsurveil_proto::AuthKind::Pat,
         }).unwrap();
         store.upsert_item(&item(ItemKind::ReviewRequested, CiStatus::None)).unwrap();
-        store.set_dismissed("id", true).unwrap();
+        store.set_dismissed("id", true, "2024-01-01T00:00:00Z").unwrap();
 
         // Poll 1: GitHub unchanged -> Carried. The poller skips the write, so
         // the dismiss marker survives and the item stays out of the Dashboard.
@@ -530,7 +533,7 @@ mod tests {
             auth_kind: gitsurveil_proto::AuthKind::Pat,
         }).unwrap();
         store.upsert_item(&item(ItemKind::ReviewRequested, CiStatus::None)).unwrap();
-        store.set_dismissed("id", true).unwrap();
+        store.set_dismissed("id", true, "2024-01-01T00:00:00Z").unwrap();
         store.clear_history().unwrap();
 
         // New GitHub activity -> Updated, but the item is archived: the poller

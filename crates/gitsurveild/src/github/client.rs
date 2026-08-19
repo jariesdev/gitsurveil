@@ -533,6 +533,9 @@ impl RawNotification {
             last_seen_at: now,
             ci_status: CiStatus::None,
             raw_kind: self.reason,
+            dismissed_updated_at: None,
+            dismissed_at: None,
+            dismissed_ci_status: None,
             activity: None,
             archived: false,
         }
@@ -710,6 +713,9 @@ impl PrNode {
             last_seen_at: now,
             ci_status,
             raw_kind: format!("{kind:?}"),
+            dismissed_updated_at: None,
+            dismissed_at: None,
+            dismissed_ci_status: None,
             activity: None,
             archived: false,
         }

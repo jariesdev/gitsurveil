@@ -23,7 +23,7 @@ use rusqlite::{params, Connection};
 use crate::error::{DaemonError, Result};
 use crate::github::client::DiscoveredRepo;
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 7;
 
 /// The daemon's persistent state store.
 pub struct Store {
@@ -45,6 +45,15 @@ impl Store {
     }
 
     /// In-memory store, used by tests so they never touch disk.
+    /// Diagnostic-only constructor: wraps an already-open connection without
+    /// running `migrate()`, so a test can seed a pre-migration schema first.
+    #[cfg(test)]
+    fn from_connection(conn: Connection) -> Store {
+        Store {
+            conn: Mutex::new(conn),
+        }
+    }
+
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Store> {
         let conn = Connection::open_in_memory()?;
@@ -87,7 +96,10 @@ impl Store {
                 ci_status      TEXT NOT NULL,
                 raw_kind       TEXT NOT NULL,
                 activity       TEXT,
-                archived       INTEGER NOT NULL DEFAULT 0
+                archived       INTEGER NOT NULL DEFAULT 0,
+                dismissed_updated_at TEXT,
+                dismissed_at         TEXT,
+                dismissed_ci_status  TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_items_account ON items(account_id);
             CREATE INDEX IF NOT EXISTS idx_items_state ON items(state);
@@ -192,6 +204,28 @@ impl Store {
                 "ALTER TABLE items ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
             )?;
         }
+        // v7: `items.dismissed_updated_at`/`dismissed_at`/`dismissed_ci_status`
+        // snapshot the item at the moment of dismissal, so a resurrected item's
+        // detail pane can show what changed since then. `dismissed_updated_at`
+        // is GitHub's `updated_at` at dismissal time — the skew-free watermark
+        // used to split later comments into "already seen" and "arrived while
+        // dismissed" (`specs/github-integration.md` § Clock skew: comparisons
+        // never mix local and GitHub time). `dismissed_at` is local time, for
+        // display only. `dismissed_ci_status` is stored because `Check` carries
+        // no timestamp, so a pass→fail transition is otherwise unrecoverable.
+        let has_dismissed_watermark = conn
+            .prepare(
+                "SELECT 1 FROM pragma_table_info('items') WHERE name = 'dismissed_updated_at'",
+            )?
+            .query_row([], |_| Ok(()))
+            .is_ok();
+        if !has_dismissed_watermark {
+            conn.execute_batch(
+                "ALTER TABLE items ADD COLUMN dismissed_updated_at TEXT;
+                 ALTER TABLE items ADD COLUMN dismissed_at TEXT;
+                 ALTER TABLE items ADD COLUMN dismissed_ci_status TEXT;",
+            )?;
+        }
         conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?1)",
             params![SCHEMA_VERSION.to_string()],
@@ -289,14 +323,21 @@ impl Store {
     /// so a poll can never un-archive an item. The poller additionally skips
     /// archived rows entirely (`should_preserve_local_state`), so this only
     /// matters as a defensive guarantee.
+    /// Upserts a freshly fetched item. On conflict, `dismissed_updated_at`,
+    /// `dismissed_at`, and `dismissed_ci_status` are deliberately absent from
+    /// `SET` — a fetched item never carries dismissal data (it's always
+    /// `None`), so including them would clobber the snapshot `set_dismissed`
+    /// wrote. This is what lets a resurrected item's detail pane still show
+    /// what changed since it was dismissed.
     pub fn upsert_item(&self, item: &ActionItem) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO items (
                 id, account_id, kind, state, repo, number, title, url, author,
                 created_at, updated_at, first_seen_at, last_seen_at, ci_status,
-                raw_kind, activity, archived
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+                raw_kind, activity, archived,
+                dismissed_updated_at, dismissed_at, dismissed_ci_status
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
              ON CONFLICT(id) DO UPDATE SET
                 state = excluded.state,
                 title = excluded.title,
@@ -323,6 +364,9 @@ impl Store {
                 item.raw_kind,
                 item.activity,
                 item.archived as i64,
+                item.dismissed_updated_at,
+                item.dismissed_at,
+                item.dismissed_ci_status.map(ci_status_to_str),
             ],
         )?;
         Ok(())
@@ -340,13 +384,33 @@ impl Store {
     }
 
     /// Sets an item's local dismissed state (`items.dismiss`/`items.undismiss`).
-    pub fn set_dismissed(&self, item_id: &str, dismissed: bool) -> Result<()> {
+    /// Dismissing snapshots the item's own `updated_at`/`ci_status` into the
+    /// `dismissed_*` columns in the same statement — the watermark a
+    /// resurrected item's detail pane later diffs against
+    /// (`specs/github-integration.md` § Dismissal watermark). Undismissing
+    /// (manual restore from History) clears the snapshot: the user brought it
+    /// back deliberately, so there's nothing left to explain.
+    pub fn set_dismissed(&self, item_id: &str, dismissed: bool, now: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let state = if dismissed { "dismissed" } else { "open" };
-        conn.execute(
-            "UPDATE items SET state = ?1 WHERE id = ?2",
-            params![state, item_id],
-        )?;
+        if dismissed {
+            conn.execute(
+                "UPDATE items SET state = 'dismissed',
+                    dismissed_updated_at = updated_at,
+                    dismissed_ci_status = ci_status,
+                    dismissed_at = ?1
+                 WHERE id = ?2",
+                params![now, item_id],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE items SET state = 'open',
+                    dismissed_updated_at = NULL,
+                    dismissed_ci_status = NULL,
+                    dismissed_at = NULL
+                 WHERE id = ?1",
+                params![item_id],
+            )?;
+        }
         Ok(())
     }
 
@@ -358,7 +422,8 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
                     created_at, updated_at, first_seen_at, last_seen_at, ci_status,
-                    raw_kind, activity, archived
+                    raw_kind, activity, archived,
+                    dismissed_updated_at, dismissed_at, dismissed_ci_status
              FROM items WHERE account_id = ?1",
         )?;
         let rows = stmt.query_map(params![account_id], row_to_item)?;
@@ -374,7 +439,8 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
                     created_at, updated_at, first_seen_at, last_seen_at, ci_status,
-                    raw_kind, activity, archived
+                    raw_kind, activity, archived,
+                    dismissed_updated_at, dismissed_at, dismissed_ci_status
              FROM items i WHERE state = 'open' AND archived = 0 AND NOT EXISTS (
                 SELECT 1 FROM repositories r
                 WHERE r.account_id = i.account_id AND r.full_name = i.repo
@@ -394,7 +460,8 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, account_id, kind, state, repo, number, title, url, author,
                     created_at, updated_at, first_seen_at, last_seen_at, ci_status,
-                    raw_kind, activity, archived
+                    raw_kind, activity, archived,
+                    dismissed_updated_at, dismissed_at, dismissed_ci_status
              FROM items i WHERE state IN ('done', 'dismissed') AND archived = 0
                AND NOT EXISTS (
                 SELECT 1 FROM repositories r
@@ -983,6 +1050,7 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ActionItem> {
     let state_str: String = row.get(3)?;
     let ci_status_str: String = row.get(13)?;
     let number: Option<i64> = row.get(5)?;
+    let dismissed_ci_status_str: Option<String> = row.get(19)?;
     Ok(ActionItem {
         id: row.get(0)?,
         account_id: row.get(1)?,
@@ -1001,6 +1069,9 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ActionItem> {
         raw_kind: row.get(14)?,
         activity: row.get(15)?,
         archived: row.get(16)?,
+        dismissed_updated_at: row.get(17)?,
+        dismissed_at: row.get(18)?,
+        dismissed_ci_status: dismissed_ci_status_str.as_deref().map(ci_status_from_str),
     })
 }
 
@@ -1117,6 +1188,9 @@ mod tests {
             last_seen_at: "2026-08-01T00:00:00Z".into(),
             ci_status: CiStatus::Passing,
             raw_kind: "review_requested".into(),
+            dismissed_updated_at: None,
+            dismissed_at: None,
+            dismissed_ci_status: None,
             activity: None,
             archived: false,
         }
@@ -1154,11 +1228,144 @@ mod tests {
         store.upsert_account(&sample_account()).unwrap();
         store.upsert_item(&sample_item("item-1")).unwrap();
 
-        store.set_dismissed("item-1", true).unwrap();
+        store.set_dismissed("item-1", true, "2024-01-01T00:00:00Z").unwrap();
         assert!(store.open_items().unwrap().is_empty());
 
-        store.set_dismissed("item-1", false).unwrap();
+        store.set_dismissed("item-1", false, "2024-01-01T00:00:00Z").unwrap();
         assert_eq!(store.open_items().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn upgrading_a_pre_dismissal_watermark_db_does_not_duplicate_items() {
+        // Simulates a real installed database from before the
+        // `dismissed_updated_at`/`dismissed_at`/`dismissed_ci_status` columns
+        // existed — the in-memory `Store::open_in_memory()` helper used by
+        // every other test always starts from `CREATE TABLE IF NOT EXISTS`
+        // with the new columns already baked in, so it never actually
+        // exercises the `ALTER TABLE` upgrade path a real user hits.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE accounts (
+                id TEXT PRIMARY KEY, host TEXT NOT NULL, api_base TEXT NOT NULL,
+                login TEXT NOT NULL, auth_kind TEXT NOT NULL
+             );
+             CREATE TABLE items (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL, state TEXT NOT NULL, repo TEXT NOT NULL,
+                number INTEGER, title TEXT NOT NULL, url TEXT NOT NULL, author TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+                ci_status TEXT NOT NULL, raw_kind TEXT NOT NULL,
+                activity TEXT, archived INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO accounts VALUES
+                ('acc-1', 'github.com', 'https://api.github.com', 'octocat', 'pat');
+             INSERT INTO items (
+                id, account_id, kind, state, repo, number, title, url, author,
+                created_at, updated_at, first_seen_at, last_seen_at, ci_status,
+                raw_kind, activity, archived
+             ) VALUES (
+                'item-1', 'acc-1', 'review_requested', 'open', 'acme/api', 482,
+                'Fix the thing', 'https://github.com/acme/api/pull/482', 'someone',
+                't0', 't0', 't0', 't0', 'passing', 'review_requested', NULL, 0
+             );",
+        )
+        .unwrap();
+
+        let store = Store::from_connection(conn);
+        store.migrate().unwrap();
+        // A second run (e.g. a daemon restart) must be idempotent too.
+        store.migrate().unwrap();
+
+        let items = store.items_for_account("acc-1").unwrap();
+        assert_eq!(items.len(), 1, "upgrading the schema must not duplicate existing rows");
+        assert_eq!(items[0].dismissed_updated_at, None);
+
+        // The upgraded row must still upsert in place, not insert a sibling.
+        let mut refetched = sample_item("item-1");
+        refetched.updated_at = "t1".into();
+        store.upsert_item(&refetched).unwrap();
+        assert_eq!(store.items_for_account("acc-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn dismiss_snapshots_updated_at_and_ci_status_as_the_watermark() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store.upsert_item(&sample_item("item-1")).unwrap();
+
+        store
+            .set_dismissed("item-1", true, "2026-08-02T00:00:00Z")
+            .unwrap();
+
+        let item = store
+            .items_for_account("acc-1")
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == "item-1")
+            .unwrap();
+        assert_eq!(item.dismissed_updated_at.as_deref(), Some("2026-08-01T00:00:00Z"));
+        assert_eq!(item.dismissed_at.as_deref(), Some("2026-08-02T00:00:00Z"));
+        assert_eq!(item.dismissed_ci_status, Some(CiStatus::Passing));
+    }
+
+    #[test]
+    fn undismiss_clears_the_dismissal_watermark() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store.upsert_item(&sample_item("item-1")).unwrap();
+        store
+            .set_dismissed("item-1", true, "2026-08-02T00:00:00Z")
+            .unwrap();
+
+        store
+            .set_dismissed("item-1", false, "2026-08-03T00:00:00Z")
+            .unwrap();
+
+        let item = store
+            .items_for_account("acc-1")
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == "item-1")
+            .unwrap();
+        assert_eq!(item.dismissed_updated_at, None);
+        assert_eq!(item.dismissed_at, None);
+        assert_eq!(item.dismissed_ci_status, None);
+    }
+
+    #[test]
+    fn resurrecting_a_dismissed_item_preserves_its_watermark() {
+        // The poller's upsert on an `Updated` item is what reopens a
+        // dismissed row (`should_preserve_local_state` in poller.rs only
+        // skips the write for `Carried` items). That upsert must not wipe the
+        // dismissal snapshot the detail pane needs to explain the return.
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store.upsert_item(&sample_item("item-1")).unwrap();
+        store
+            .set_dismissed("item-1", true, "2026-08-02T00:00:00Z")
+            .unwrap();
+
+        let mut updated = sample_item("item-1");
+        updated.updated_at = "2026-08-05T00:00:00Z".into();
+        updated.ci_status = CiStatus::Failing;
+        store.upsert_item(&updated).unwrap();
+
+        let item = store
+            .items_for_account("acc-1")
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == "item-1")
+            .unwrap();
+        assert_eq!(item.state, ItemState::Open, "the resurrecting upsert reopens the item, as the poller does for an Updated item");
+        assert_eq!(
+            item.dismissed_updated_at.as_deref(),
+            Some("2026-08-01T00:00:00Z"),
+            "watermark survives the resurrecting upsert"
+        );
+        assert_eq!(item.dismissed_ci_status, Some(CiStatus::Passing));
+        assert_eq!(item.ci_status, CiStatus::Failing, "current status still reflects the fresh fetch");
     }
 
     #[test]
@@ -1364,7 +1571,7 @@ mod tests {
         store.upsert_item(&sample_item("done-1")).unwrap();
         store.upsert_item(&sample_item("dismissed-1")).unwrap();
         store.mark_item_done("done-1").unwrap();
-        store.set_dismissed("dismissed-1", true).unwrap();
+        store.set_dismissed("dismissed-1", true, "2024-01-01T00:00:00Z").unwrap();
 
         store.clear_history().unwrap();
 
@@ -1386,7 +1593,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.upsert_account(&sample_account()).unwrap();
         store.upsert_item(&sample_item("dismissed-keep")).unwrap();
-        store.set_dismissed("dismissed-keep", true).unwrap();
+        store.set_dismissed("dismissed-keep", true, "2024-01-01T00:00:00Z").unwrap();
         let mut archived = sample_item("dismissed-archived");
         archived.state = gitsurveil_proto::ItemState::Dismissed;
         archived.archived = true;

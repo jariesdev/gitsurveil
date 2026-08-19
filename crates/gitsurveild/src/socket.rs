@@ -505,7 +505,9 @@ fn handle_items_set_dismissed(
 ) -> Result<serde_json::Value> {
     let params: ItemIdParams =
         serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
-    state.store.set_dismissed(&params.id, dismissed)?;
+    state
+        .store
+        .set_dismissed(&params.id, dismissed, &crate::poller::now_rfc3339())?;
     Ok(serde_json::Value::Null)
 }
 
@@ -1600,6 +1602,9 @@ mod tests {
             last_seen_at: "2026-08-13T12:00:00Z".into(),
             ci_status: gitsurveil_proto::CiStatus::None,
             raw_kind: "assign".into(),
+            dismissed_updated_at: None,
+            dismissed_at: None,
+            dismissed_ci_status: None,
             activity: None,
             archived: false,
         };
@@ -1644,6 +1649,9 @@ mod tests {
             last_seen_at: "2026-08-13T12:00:00Z".into(),
             ci_status: gitsurveil_proto::CiStatus::None,
             raw_kind: "assign".into(),
+            dismissed_updated_at: None,
+            dismissed_at: None,
+            dismissed_ci_status: None,
             activity: None,
             archived: false,
         }).unwrap();
@@ -1686,11 +1694,14 @@ mod tests {
                 last_seen_at: "2026-08-13T12:00:00Z".into(),
                 ci_status: gitsurveil_proto::CiStatus::None,
                 raw_kind: "assign".into(),
-                activity: None,
+                dismissed_updated_at: None,
+            dismissed_at: None,
+            dismissed_ci_status: None,
+            activity: None,
                 archived: false,
             }).unwrap();
         }
-        state.store.set_dismissed("dismissed-1", true).unwrap();
+        state.store.set_dismissed("dismissed-1", true, "2024-01-01T00:00:00Z").unwrap();
 
         let resp = dispatch(
             &state,

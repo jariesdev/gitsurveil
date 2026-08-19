@@ -90,6 +90,9 @@ mod tests {
             last_seen_at: "2026-08-01T00:00:00Z".into(),
             ci_status: CiStatus::None,
             raw_kind: "review_requested".into(),
+            dismissed_updated_at: None,
+            dismissed_at: None,
+            dismissed_ci_status: None,
             activity: None,
             archived: false,
         }
