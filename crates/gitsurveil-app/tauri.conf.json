@@ -30,6 +30,9 @@
       "binaries/gitsurveild"
     ],
     "shortDescription": "GitHub action-item monitor",
-    "longDescription": "Monitors GitHub for the pull requests, reviews, mentions and build failures that need you, and tells you only when something outranks what you are already doing."
+    "longDescription": "Monitors GitHub for the pull requests, reviews, mentions and build failures that need you, and tells you only when something outranks what you are already doing.",
+    "publisher": "Jay Aries Flores",
+    "homepage": "https://github.com/jariesdev/gitsurveil",
+    "copyright": "Copyright 2026 Jay Aries Flores"
   }
 }

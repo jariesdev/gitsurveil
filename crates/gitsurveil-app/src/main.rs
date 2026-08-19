@@ -22,7 +22,7 @@ mod tray;
 use std::path::PathBuf;
 
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WebviewUrl, WebviewWindowBuilder,
 };
@@ -176,6 +176,51 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Builds the macOS application menu (the one next to the Apple logo).
+///
+/// Standard items use `PredefinedMenuItem` so the OS handles About, Hide,
+/// and Quit natively — no custom event wiring needed. The menu is set on
+/// the main window; it only appears when that window is focused.
+fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let about = PredefinedMenuItem::about(
+        app,
+        Some("About GitSurveil"),
+        Some(tauri::menu::AboutMetadata {
+            version: Some(env!("CARGO_PKG_VERSION").into()),
+            copyright: Some("Copyright 2026 Jay Aries Flores".into()),
+            ..Default::default()
+        }),
+    )?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let services = PredefinedMenuItem::services(app, Some("Services"))?;
+    let hide = PredefinedMenuItem::hide(app, Some("Hide GitSurveil"))?;
+    let hide_others = PredefinedMenuItem::hide_others(app, None)?;
+    let show_all = PredefinedMenuItem::show_all(app, None)?;
+    let quit = PredefinedMenuItem::quit(app, Some("Quit GitSurveil"))?;
+    let website = MenuItem::with_id(app, "website", "GitSurveil on GitHub", true, None::<&str>)?;
+
+    let app_menu = Submenu::with_items(
+        app,
+        "GitSurveil",
+        true,
+        &[
+            &about,
+            &separator,
+            &website,
+            &separator,
+            &services,
+            &separator,
+            &hide,
+            &hide_others,
+            &show_all,
+            &separator,
+            &quit,
+        ],
+    )?;
+
+    Menu::with_items(app, &[&app_menu])
+}
+
 /// Opens the full desktop window, focusing it if it already exists.
 ///
 /// Unlike the popover this is an ordinary window: it stays where the user put
@@ -198,6 +243,20 @@ fn open_main(app: &tauri::AppHandle) -> tauri::Result<()> {
         .min_inner_size(760.0, 520.0)
         .resizable(true)
         .build()?;
+
+    window.set_menu(build_app_menu(app)?)?;
+    {
+        let app = app.clone();
+        window.on_menu_event(move |_window, event| {
+            if event.id.as_ref() == "website" {
+                use tauri_plugin_opener::OpenerExt;
+                let _ = app.opener().open_url(
+                    "https://github.com/jariesdev/gitsurveil",
+                    None::<&str>,
+                );
+            }
+        });
+    }
 
     // The app runs as an accessory (no dock icon) for the tray's sake, which
     // also means a new window can open behind whatever is in front. Become a
