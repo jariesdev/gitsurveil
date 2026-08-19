@@ -89,6 +89,10 @@ export function Dashboard({
     // No local refresh needed: the dismiss command makes the Rust shell emit
     // `items-changed`, and the app-level listener refetches once.
     await dismissItem(id);
+    // Close the detail pane if the dismissed item was the one open.
+    if (selected?.id === id) {
+      setSelected(null);
+    }
   }
 
   async function handlePoll() {
