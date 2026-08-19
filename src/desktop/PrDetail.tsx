@@ -25,7 +25,11 @@ import {
 import { renderMarkdown } from "../markdown";
 import { copyText } from "./clipboard";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { age } from "./ItemRow";
+import { returnedChanges, type ReturnedChanges } from "./returnedChanges";
 import type {
+  ActionItem,
+  Comment,
   Conversation,
   MergeMethod,
   Mergeability,
@@ -73,12 +77,20 @@ const MERGEABILITY: Record<Mergeability, { label: string; className: string }> =
 export function PrDetail({
   repo,
   number,
+  item,
   onClose,
   onChanged,
   onResolve,
 }: {
   repo: string;
   number: number;
+  /**
+   * The dashboard row this pane opened from, when there is one — carries
+   * `dismissed_updated_at`/`dismissed_ci_status` so a resurrected item can
+   * show what changed since dismissal. Absent from views with no row context
+   * (e.g. the standing Pull Requests list), which simply skip the banner.
+   */
+  item?: ActionItem;
   onClose: () => void;
   /** Called after a mutation, so the dashboard can refresh behind the pane. */
   onChanged: () => void;
@@ -289,10 +301,18 @@ export function PrDetail({
   const messageCount =
     convo.issue_comments.length +
     convo.review_threads.reduce((n, t) => n + t.comments.length, 0);
+  const changes = item ? returnedChanges(item, convo) : null;
+  // Per-comment marking uses the watermark directly rather than `changes`'
+  // aggregated lists — review comment ids aren't unique across threads
+  // (`comment.id || index` below), so a per-comment predicate is safer than
+  // building an id set.
+  const watermark = item?.dismissed_updated_at ?? null;
+  const isNewComment = (comment: Comment) => watermark !== null && comment.created_at > watermark;
 
   return (
     <Panel onClose={onClose}>
       <div className="overflow-y-auto">
+        {changes && <ReturnedBanner changes={changes} />}
         <div className="border-b border-neutral-200 p-4 dark:border-neutral-800">
           {editing ? (
             <div className="space-y-2">
@@ -479,11 +499,19 @@ export function PrDetail({
           ) : (
             <ul className="space-y-4">
               {convo.issue_comments.map((comment) => (
-                <li key={`issue-${comment.id}`} className="text-xs">
-                  <div className="text-neutral-500">
+                <li
+                  key={`issue-${comment.id}`}
+                  className={
+                    isNewComment(comment)
+                      ? "border-l-2 border-amber-400 pl-2 text-xs dark:border-amber-500"
+                      : "text-xs"
+                  }
+                >
+                  <div className="flex items-center gap-1.5 text-neutral-500">
                     <span className="font-medium text-neutral-700 dark:text-neutral-300">
                       {comment.author}
                     </span>
+                    {isNewComment(comment) && <Badge>New</Badge>}
                   </div>
                   <Markdown source={comment.body} />
                 </li>
@@ -511,11 +539,19 @@ export function PrDetail({
 
                   <ul className="mt-1 space-y-2">
                     {thread.comments.map((comment, index) => (
-                      <li key={`${thread.id}-${comment.id || index}`} className="text-xs">
-                        <span className="text-neutral-500">
+                      <li
+                        key={`${thread.id}-${comment.id || index}`}
+                        className={
+                          isNewComment(comment)
+                            ? "border-l-2 border-amber-400 pl-2 text-xs dark:border-amber-500"
+                            : "text-xs"
+                        }
+                      >
+                        <span className="flex items-center gap-1.5 text-neutral-500">
                           <span className="font-medium text-neutral-700 dark:text-neutral-300">
                             {comment.author}
                           </span>
+                          {isNewComment(comment) && <Badge>New</Badge>}
                         </span>
                         <Markdown source={comment.body} />
                       </li>
@@ -690,6 +726,47 @@ export function PrDetail({
         </div>
       </footer>
     </Panel>
+  );
+}
+
+/** What changed since the user dismissed this item and it came back
+ * (`specs/desktop-ui.md`). Renders even when nothing nameable changed — an
+ * honest "updated on GitHub, no new comments" beats implying a change that
+ * isn't there (e.g. a label edit, which the daemon doesn't track). */
+function ReturnedBanner({ changes }: { changes: ReturnedChanges }) {
+  const lines: string[] = [];
+  if (changes.newIssueComments.length > 0) {
+    const authors = [...new Set(changes.newIssueComments.map((c) => c.author))].join(", ");
+    lines.push(
+      `${changes.newIssueComments.length} new comment${changes.newIssueComments.length === 1 ? "" : "s"} (${authors})`,
+    );
+  }
+  if (changes.threadsWithNewReplies.length > 0) {
+    lines.push(
+      `${changes.threadsWithNewReplies.length} review thread${changes.threadsWithNewReplies.length === 1 ? "" : "s"} with new replies`,
+    );
+  }
+  if (changes.ciFlippedToFailing) {
+    lines.push("CI: passing → failing");
+  }
+
+  return (
+    <div className="border-b border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-900 dark:bg-amber-950/40">
+      <p className="font-medium text-amber-800 dark:text-amber-300">
+        ↻ Returned — dismissed {age(changes.dismissedAt)} ago
+      </p>
+      {changes.nothingNameable ? (
+        <p className="mt-1 text-amber-700 dark:text-amber-400">
+          Updated on GitHub since you dismissed it — no new comments.
+        </p>
+      ) : (
+        <ul className="mt-1 list-inside list-disc text-amber-700 dark:text-amber-400">
+          {lines.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

@@ -8,7 +8,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PrDetail } from "./PrDetail";
-import type { Conversation, PullRequestDetail } from "../types";
+import type { ActionItem, Conversation, PullRequestDetail } from "../types";
 
 vi.mock("../ipc", () => ({
   prDetail: vi.fn(),
@@ -53,6 +53,30 @@ function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
     issue_comments: [],
     review_threads: [],
+    ...overrides,
+  };
+}
+
+function actionItem(overrides: Partial<ActionItem> = {}): ActionItem {
+  return {
+    id: "item-1",
+    account_id: "acc-1",
+    kind: "review_requested",
+    state: "open",
+    repo: "acme/api",
+    number: 482,
+    title: "Add rate limiting",
+    url: "https://github.com/acme/api/pull/482",
+    author: "carol",
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T00:00:00Z",
+    first_seen_at: "2026-08-01T00:00:00Z",
+    last_seen_at: "2026-08-01T00:00:00Z",
+    ci_status: "passing",
+    raw_kind: "review_requested",
+    dismissed_updated_at: null,
+    dismissed_at: null,
+    dismissed_ci_status: null,
     ...overrides,
   };
 }
@@ -480,5 +504,54 @@ describe("PrDetail", () => {
 
     expect(writeText).toHaveBeenCalledWith("https://docs.example.com/guide");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("shows what changed since dismissal and marks only the post-watermark comment", async () => {
+    vi.mocked(ipc.prDetail).mockResolvedValue(pr());
+    vi.mocked(ipc.prComments).mockResolvedValue(
+      conversation({
+        issue_comments: [
+          { id: 1, author: "carol", body: "old comment", created_at: "2026-08-01T00:00:00Z", path: null },
+          { id: 2, author: "dave", body: "new comment", created_at: "2026-08-03T00:00:00Z", path: null },
+        ],
+      }),
+    );
+
+    render(
+      <PrDetail
+        repo="acme/api"
+        number={482}
+        item={actionItem({ dismissed_updated_at: "2026-08-02T00:00:00Z", dismissed_at: "2026-08-02T00:00:00Z" })}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+        onResolve={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/Returned — dismissed/)).toBeInTheDocument();
+    expect(screen.getByText("1 new comment (dave)")).toBeInTheDocument();
+
+    const newComment = screen.getByText("new comment").closest("li");
+    const oldComment = screen.getByText("old comment").closest("li");
+    expect(newComment?.textContent).toContain("New");
+    expect(oldComment?.textContent).not.toContain("New");
+  });
+
+  it("shows no banner when the item was never dismissed", async () => {
+    vi.mocked(ipc.prDetail).mockResolvedValue(pr());
+
+    render(
+      <PrDetail
+        repo="acme/api"
+        number={482}
+        item={actionItem()}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+        onResolve={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("Add rate limiting");
+    expect(screen.queryByText(/Returned — dismissed/)).not.toBeInTheDocument();
   });
 });

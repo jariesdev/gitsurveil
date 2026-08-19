@@ -28,10 +28,13 @@ export function age(iso: string): string {
 
 export function ItemRow({
   item,
+  active = false,
   onOpen,
   onDismiss,
 }: {
   item: ScoredItem;
+  /** Whether this row's detail pane is the one currently open. */
+  active?: boolean;
   onOpen: () => void;
   /** Omitted in history, where there is nothing left to dismiss. */
   onDismiss?: () => void;
@@ -89,7 +92,12 @@ export function ItemRow({
 
   return (
     <div
-      className="group flex items-center gap-3 border-b border-neutral-200 px-4 py-2 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50"
+      aria-current={active || undefined}
+      className={`group flex items-center gap-3 border-b border-l-2 border-b-neutral-200 px-4 py-2 dark:border-b-neutral-800 ${
+        active
+          ? "border-l-blue-500 bg-blue-50 dark:bg-blue-950/30"
+          : "border-l-transparent hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+      }`}
       onContextMenu={handleContextMenu}
     >
       <span

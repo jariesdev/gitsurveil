@@ -43,6 +43,18 @@ export interface ActionItem {
   ci_status: CiStatus;
   raw_kind: string;
   /**
+   * This item's `updated_at` at the moment it was dismissed, or `null` if
+   * never dismissed (or restored). The GitHub-time watermark used to split
+   * later comments into "already seen" vs. "arrived while dismissed" — see
+   * {@link returnedChanges} in `returnedChanges.ts`. Never compare against
+   * local time (`specs/github-integration.md` § Dismissal watermark).
+   */
+  dismissed_updated_at: string | null;
+  /** Local time of dismissal, or `null`. Display only — never compared. */
+  dismissed_at: string | null;
+  /** `ci_status` at the moment of dismissal, or `null`. */
+  dismissed_ci_status: CiStatus | null;
+  /**
    * Daemon-internal fingerprint of the activity that makes an item qualify.
    * Mirrors the Rust field for completeness, but is `#[serde(skip)]`ped — it
    * never crosses IPC, so the UI always sees it absent.

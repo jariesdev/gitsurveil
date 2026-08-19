@@ -25,6 +25,9 @@ function item(overrides: Partial<ScoredItem> = {}): ScoredItem {
     last_seen_at: new Date().toISOString(),
     ci_status: "passing",
     raw_kind: "review_requested",
+    dismissed_updated_at: null,
+    dismissed_at: null,
+    dismissed_ci_status: null,
     score: 80,
     severity: "high",
     muted: false,
@@ -72,5 +75,14 @@ describe("ItemRow context menu", () => {
       expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
     });
     expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("marks the row current only when active", () => {
+    const { rerender } = render(<ItemRow item={item()} onOpen={vi.fn()} />);
+    const row = screen.getByText("Add rate limiting").closest("div.group");
+    expect(row).not.toHaveAttribute("aria-current");
+
+    rerender(<ItemRow item={item()} active onOpen={vi.fn()} />);
+    expect(row).toHaveAttribute("aria-current", "true");
   });
 });

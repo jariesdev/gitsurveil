@@ -48,14 +48,26 @@ export function Dashboard({
   const [groupBy, setGroupBy] = useState<GroupBy>("priority");
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [busy, setBusy] = useState(false);
-  /** The PR whose detail pane is open, if any. */
-  const [selected, setSelected] = useState<{ repo: string; number: number } | null>(
+  /**
+   * The PR whose detail pane is open, if any. Carries `id` alongside
+   * `repo`/`number` because a single PR can produce more than one row — e.g.
+   * one `ActionItem` each for Assigned/Authored/ReadyToMerge — so `repo` +
+   * `number` alone can't tell which row is the one that's actually open.
+   */
+  const [selected, setSelected] = useState<{ repo: string; number: number; id: string } | null>(
     null,
   );
   /** The PR being resolved in the three-pane editor, if any. */
   const [resolving, setResolving] = useState<{ repo: string; number: number } | null>(
     null,
   );
+
+  // Looked up from `items` (rather than captured at click-time) so it stays
+  // current across refreshes — e.g. the moment `items-changed` fires after a
+  // poll resurrects a dismissed item, the returned-changes banner picks up
+  // its `dismissed_*` snapshot without the pane needing to reopen. Matched by
+  // `id`, not `repo`/`number`, for the same multi-row-per-PR reason as above.
+  const selectedItem = selected ? items.find((item) => item.id === selected.id) : undefined;
 
   const visible = useMemo(() => applyFilters(items, filters), [items, filters]);
   const groups = useMemo(() => groupItems(visible, groupBy), [visible, groupBy]);
@@ -208,12 +220,13 @@ export function Dashboard({
                   <li key={item.id}>
                     <ItemRow
                       item={item}
+                      active={selected?.id === item.id}
                       onOpen={() => {
                         // Items without a number aren't pull requests (some
                         // notification threads carry none), so there's nothing
                         // for the detail pane to load — go to GitHub instead.
                         if (item.number !== null) {
-                          setSelected({ repo: item.repo, number: item.number });
+                          setSelected({ repo: item.repo, number: item.number, id: item.id });
                         } else {
                           void openUrl(item.url);
                         }
@@ -240,6 +253,7 @@ export function Dashboard({
           key={`${selected.repo}#${selected.number}`}
           repo={selected.repo}
           number={selected.number}
+          item={selectedItem}
           onClose={() => setSelected(null)}
           onChanged={onRefresh}
           onResolve={() => setResolving(selected)}
