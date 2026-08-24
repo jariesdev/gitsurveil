@@ -173,6 +173,16 @@ pub async fn remove_account(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validates a new token against the existing account's GitHub instance, then
+/// replaces the old token in the OS keychain.
+pub async fn update_account_token(id: &str, token: &str) -> Result<AccountRef> {
+    call(
+        "accounts.update_token",
+        serde_json::json!({ "id": id, "token": token }),
+    )
+    .await
+}
+
 /// Lists configured accounts.
 pub async fn list_accounts() -> Result<Vec<AccountRef>> {
     call("accounts.list", serde_json::Value::Null).await

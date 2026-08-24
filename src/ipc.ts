@@ -121,6 +121,14 @@ export function removeAccount(id: string): Promise<void> {
   return invoke<void>("remove_account", { id });
 }
 
+/** Validates a new token and replaces the existing account's stored PAT. */
+export function updateAccountToken(
+  id: string,
+  token: string,
+): Promise<AccountRef> {
+  return invoke<AccountRef>("update_account_token", { id, token });
+}
+
 /** Lists the active priority rules, so the UI can explain scores. */
 export function listRules(): Promise<Rule[]> {
   return invoke<Rule[]>("list_rules");

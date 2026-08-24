@@ -57,6 +57,7 @@ fn main() {
             commands::undismiss_item,
             commands::add_account,
             commands::remove_account,
+            commands::update_account_token,
             commands::list_accounts,
             commands::list_rules,
             commands::notifications_prefs,
@@ -526,6 +527,15 @@ mod commands {
     #[tauri::command]
     pub async fn remove_account(id: String) -> Result<(), String> {
         crate::daemon::remove_account(&id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Validates a new token against the existing account's GitHub instance,
+    /// then replaces the old token in the OS keychain.
+    #[tauri::command]
+    pub async fn update_account_token(id: String, token: String) -> Result<AccountRef, String> {
+        crate::daemon::update_account_token(&id, &token)
             .await
             .map_err(|e| e.to_string())
     }

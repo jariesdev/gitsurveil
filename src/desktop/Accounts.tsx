@@ -7,7 +7,8 @@
  * remove, and the per-repo notification checklist.
  */
 
-import { removeAccount, reposSetNotify } from "../ipc";
+import { useState } from "react";
+import { removeAccount, reposSetNotify, updateAccountToken } from "../ipc";
 import type { AccountRef, RepoCatalog } from "../types";
 import { AccountForm } from "./AccountForm";
 
@@ -44,13 +45,16 @@ export function Accounts({
                     {account.host}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void handleRemove(account)}
-                  className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700"
-                >
-                  Remove
-                </button>
+                <div className="flex gap-2">
+                  <UpdateTokenButton account={account} onChange={onChange} />
+                  <button
+                    type="button"
+                    onClick={() => void handleRemove(account)}
+                    className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700"
+                  >
+                    Remove
+                  </button>
+                </div>
               </div>
               <NotifyChecklist
                 account={account}
@@ -69,6 +73,92 @@ export function Accounts({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Inline token-update button per account. Expands a minimal form with just
+ * the new PAT field; the host and API base are unchanged so only the token
+ * needs to be re-entered. The new token is validated against GitHub before
+ * it replaces the old one in the OS keychain.
+ */
+function UpdateTokenButton({
+  account,
+  onChange,
+}: {
+  account: AccountRef;
+  onChange: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700"
+      >
+        Update token
+      </button>
+    );
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await updateAccountToken(account.id, token.trim());
+      setToken("");
+      setOpen(false);
+      onChange();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      onSubmit={(e) => void handleSubmit(e)}
+      className="flex items-center gap-2"
+    >
+      <input
+        type="password"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder="New PAT"
+        autoComplete="off"
+        className="w-48 rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+      />
+      <button
+        type="submit"
+        disabled={busy || !token.trim()}
+        className="rounded bg-neutral-900 px-2 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+      >
+        {busy ? "Validating…" : "Save"}
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(false);
+          setToken("");
+          setError(null);
+        }}
+        className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700"
+      >
+        Cancel
+      </button>
+      {error && (
+        <span role="alert" className="text-xs text-red-600 dark:text-red-400">
+          {error}
+        </span>
+      )}
+    </form>
   );
 }
 

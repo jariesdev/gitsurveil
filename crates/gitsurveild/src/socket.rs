@@ -171,6 +171,15 @@ struct AccountsAddParams {
     token: String,
 }
 
+/// Params for `accounts.update_token` — replaces the PAT for an existing
+/// account. The new token is validated against GitHub before it replaces the
+/// old one in the OS keychain.
+#[derive(Debug, Deserialize)]
+struct AccountsUpdateTokenParams {
+    id: String,
+    token: String,
+}
+
 /// Params for `conflicts.prepare`.
 #[derive(Debug, Deserialize)]
 struct ConflictsPrepareParams {
@@ -252,6 +261,9 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "accounts.list" => handle_accounts_list(state),
         "accounts.add" => handle_accounts_add(state, req.params).await,
         "accounts.remove" => handle_accounts_remove(state, req.params),
+        "accounts.update_token" => {
+            handle_accounts_update_token(state, req.params).await
+        }
         "rules.list" => handle_rules_list(state),
         "notifications.prefs" => handle_notifications_prefs(state),
         "notifications.set_pref" => handle_notifications_set_pref(state, req.params),
@@ -1336,6 +1348,35 @@ async fn handle_accounts_add(
     Ok(serde_json::to_value(account).expect("AccountRef always serializes"))
 }
 
+async fn handle_accounts_update_token(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let params: AccountsUpdateTokenParams =
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    let account = state
+        .store
+        .find_account(&params.id)?
+        .ok_or(DaemonError::UnknownAccount(params.id.clone()))?;
+
+    let client = GitHubClient::new(&account.id, &account.api_base, &params.token)?;
+    let login = client.validate().await?;
+
+    keychain::set_token(&account.id, &params.token)?;
+
+    // Refresh the login in case the new token belongs to a different user.
+    let updated = AccountRef {
+        id: account.id,
+        host: account.host,
+        api_base: account.api_base,
+        login,
+        auth_kind: account.auth_kind,
+    };
+    state.store.upsert_account(&updated)?;
+    Ok(serde_json::to_value(updated).expect("AccountRef always serializes"))
+}
+
+
 /// Starts the local API server. `address` is a filesystem path on unix
 /// (macOS/Linux) and a pipe name (e.g. `\\.\pipe\gitsurveil`) on Windows —
 /// see `main::socket_path`/`main::pipe_name` for how each is derived.
@@ -1751,6 +1792,36 @@ mod tests {
         )
         .await;
         assert_eq!(resp.error.unwrap().code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn accounts_update_token_rejects_bad_params() {
+        let state = test_state();
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 50,
+                method: "accounts.update_token".into(),
+                params: serde_json::json!({ "id": "acc-1" }),
+            },
+        )
+        .await;
+        assert_eq!(resp.error.unwrap().code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn accounts_update_token_rejects_unknown_account() {
+        let state = test_state();
+        let resp = dispatch(
+            &state,
+            Request {
+                id: 51,
+                method: "accounts.update_token".into(),
+                params: serde_json::json!({ "id": "nonexistent", "token": "ghp_new" }),
+            },
+        )
+        .await;
+        assert_eq!(resp.error.unwrap().code, "unknown_account");
     }
 
     #[tokio::test]
