@@ -17,6 +17,7 @@ mod github;
 mod keychain;
 mod notifications;
 mod poller;
+mod prs;
 mod priority;
 mod service;
 mod socket;

@@ -108,6 +108,16 @@ pub async fn poll_all_accounts(store: &Store, rules: &[Rule]) -> Option<u64> {
     to_notify.sort_by(|a, b| b.score.cmp(&a.score));
     notifications::dispatch_batch(&to_notify);
 
+    // The Pull Requests table rides this cycle rather than a polling task of
+    // its own (CLAUDE.md's rate-limit rule), throttled well below it — see
+    // `prs::SYNC_INTERVAL_SECS`. A rate limit or an offline machine must
+    // leave the last good table in place, never take down the poll cycle.
+    if !hit_rate_limit && crate::prs::sync_due(store, Utc::now()) {
+        if let Err(e) = crate::prs::sync_all(store).await {
+            tracing::warn!("pull-request sync failed: {e}");
+        }
+    }
+
     // When a rate limit was hit, use the backoff interval instead of
     // whatever GitHub requested — the normal interval is too aggressive.
     if hit_rate_limit {
