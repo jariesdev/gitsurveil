@@ -44,7 +44,7 @@ function pr(overrides: Partial<PullRequestSummary> = {}): PullRequestSummary {
     ci_status: "passing",
     review_decision: "none",
     unresolved_threads: 0,
-    mergeability: "clean",
+    mergeable: "clean",
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     ...overrides,

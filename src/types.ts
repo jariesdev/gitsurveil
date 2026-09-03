@@ -379,7 +379,7 @@ export interface PullRequestSummary {
   unresolved_threads: number;
   /** Whether it can be merged as-is. `unknown` means GitHub is still
    * computing it — never treat that as conflicted. */
-  mergeability: Mergeability;
+  mergeable: Mergeability;
   /** ISO-8601 creation time. */
   created_at: string;
   /** ISO-8601 last-update time. */

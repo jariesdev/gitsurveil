@@ -26,7 +26,7 @@ function pr(overrides: Partial<PullRequestSummary> = {}): PullRequestSummary {
     ci_status: "none",
     review_decision: "none",
     unresolved_threads: 0,
-    mergeability: "clean",
+    mergeable: "clean",
     created_at: "2026-08-13T12:00:00Z",
     updated_at: "2026-08-13T12:00:00Z",
     ...overrides,
@@ -98,10 +98,10 @@ describe("applyPrFilters", () => {
 
 describe("matchesAttention", () => {
   it("flags only an explicit conflict, never unknown (AC-4.5)", () => {
-    expect(matchesAttention(pr({ mergeability: "conflicted" }), "conflicted")).toBe(true);
-    expect(matchesAttention(pr({ mergeability: "unknown" }), "conflicted")).toBe(false);
-    expect(matchesAttention(pr({ mergeability: "clean" }), "conflicted")).toBe(false);
-    expect(matchesAttention(pr({ mergeability: "blocked" }), "conflicted")).toBe(false);
+    expect(matchesAttention(pr({ mergeable: "conflicted" }), "conflicted")).toBe(true);
+    expect(matchesAttention(pr({ mergeable: "unknown" }), "conflicted")).toBe(false);
+    expect(matchesAttention(pr({ mergeable: "clean" }), "conflicted")).toBe(false);
+    expect(matchesAttention(pr({ mergeable: "blocked" }), "conflicted")).toBe(false);
   });
 
   it("treats pending CI as not failing", () => {

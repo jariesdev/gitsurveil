@@ -71,7 +71,7 @@ export function matchesAttention(
     case "conflicted":
       // Only an explicit conflict is a conflict. `unknown` means GitHub is
       // still computing mergeability and must never flag a fresh PR.
-      return pr.mergeability === "conflicted";
+      return pr.mergeable === "conflicted";
     case "ci_failing":
       return pr.ci_status === "failing";
     case "approved":

@@ -315,7 +315,7 @@ export function PullRequests({
                             {reviewLabel(pr.review_decision)}
                           </Badge>
                         )}
-                        {pr.mergeability === "blocked" && (
+                        {pr.mergeable === "blocked" && (
                           <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300">
                             Blocked
                           </Badge>
@@ -328,7 +328,7 @@ export function PullRequests({
                       </div>
                     </button>
 
-                    {pr.mergeability === "conflicted" && (
+                    {pr.mergeable === "conflicted" && (
                       <button
                         type="button"
                         onClick={() => handleResolve(pr.repo, pr.number)}
