@@ -791,7 +791,7 @@ function WorktreesSection({
               title={`Merged in #${worktree.merged_pr.number}: ${worktree.merged_pr.title}`}
               className="shrink-0 cursor-pointer"
             >
-              <Badge className="bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300">
+              <Badge className="bg-violet-100 text-[10px] text-violet-700 dark:bg-violet-950 dark:text-violet-300">
                 Merged #{worktree.merged_pr.number}
               </Badge>
             </button>
