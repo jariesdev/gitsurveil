@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-09-04
+
+### Added
+
+- Pull Requests pane is now backed by persisted data: the daemon syncs pull
+  requests on every poll cycle and stores them locally.
+- Worktrees whose branch has a merged pull request are marked in the
+  Repositories view.
+- "Force delete" for dirty worktrees.
+- "Copy path" and "Open in Finder/Explorer" on repo and worktree context
+  menus.
+- Browser-specific open-in-browser submenu on notification context menus.
+- macOS application menu with About, GitHub link, and author info.
+- Multi-select repository filter on the dashboard.
+- Updating the personal access token for an existing account.
+- History shows what changed since dismissal and highlights the open row.
+- 5s auto-refresh with debounce for item lists.
+
+### Changed
+
+- Green idle tray icon instead of the template image.
+
+### Fixed
+
+- Mergeability is read from the field the daemon actually sends.
+- Merged-worktree chip resized to match the row's text size.
+- Detail pane closes when the active item is dismissed.
+- Poller backs off on GitHub rate-limit errors.
+- Dismissed items snapshot a watermark so resurrected items behave correctly.
+
 ## [v0.2.1] - 2026-08-16
 
 ### Fixed
@@ -74,7 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vendored OpenSSL, Linux build prerequisites, and CI and tag-driven release
   workflows.
 
-[Unreleased]: https://github.com/jariesdev/gitsurveil/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/jariesdev/gitsurveil/compare/v0.3.0...HEAD
+[v0.3.0]: https://github.com/jariesdev/gitsurveil/compare/v0.2.1...v0.3.0
 [v0.2.1]: https://github.com/jariesdev/gitsurveil/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/jariesdev/gitsurveil/compare/v0.1.1...v0.2.0
 [v0.1.1]: https://github.com/jariesdev/gitsurveil/compare/v0.1.0-alpha...v0.1.1
