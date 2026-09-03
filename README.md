@@ -249,8 +249,11 @@ opens the full window:
 - **Dashboard** — items grouped by priority (or by type), with search and
   filters by account, **repository**, type, and severity. Dismiss anything you
   don't want to see, or force an immediate check with **Check now**.
-- **Pull Requests** — your PRs across all accounts, with their live state:
-  draft, review decision, CI, and mergeability. Filter by status (Open is the
+- **Pull Requests** — your PRs across all accounts, with their state: draft,
+  review decision, CI, and mergeability. The daemon keeps these in its local
+  database and refreshes them on its poll cycle, so the view opens instantly
+  and still works with no network; **Refresh** forces a round trip when you
+  can't wait for the next sync. Filter by status (Open is the
   default; Closed, Merged, or All re-query the daemon), account, repository,
   role, and attention (draft / conflicted / CI failing / approved), plus
   title+repo search. A chat-bubble badge shows how many unresolved review
@@ -359,7 +362,8 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `pr.comment_reply` | Reply inside a review thread |
 | `pr.resolve` | Resolve or unresolve a review thread |
 | `pr.branches` / `pr.labels` | Branch names and repo labels, for the create/edit pickers |
-| `prs.list` | Live list of PRs across accounts (standing state for the Pull Requests view); optional account filter and open/closed/merged state |
+| `prs.list` | Stored list of PRs across accounts (standing state for the Pull Requests view); optional account filter and open/closed/merged state |
+| `prs.refresh` | Force a pull-request sync with GitHub now, then return the refreshed list |
 | `repos.list` | The full repository catalog (every discovered repo + organizations), with tracked state and clone path |
 | `repos.new` | Repositories discovered but not yet acknowledged |
 | `repos.ack_new` | Dismiss the whole "new repositories" batch |

@@ -334,8 +334,9 @@ export function prLabels(repo: string): Promise<string[]> {
 }
 
 /**
- * Rows for the Pull Requests view. `state` re-queries the daemon (it changes
- * the GraphQL search qualifier); `accountId` restricts to one account. Every
+ * Rows for the Pull Requests view, read from the daemon's stored table — so
+ * this returns instantly and works with no network. `state` re-queries the
+ * daemon (it is applied in SQL); `accountId` restricts to one account. Every
  * other filter is applied client-side in `src/desktop/PullRequests/filters.ts`.
  */
 export function listPullRequests(args?: {
@@ -343,6 +344,22 @@ export function listPullRequests(args?: {
   state?: PrState;
 }): Promise<PullRequestSummary[]> {
   return invoke<PullRequestSummary[]>("prs_list", {
+    accountId: args?.accountId,
+    state: args?.state,
+  });
+}
+
+/**
+ * Forces a sync with GitHub and returns the refreshed rows. Backs the Pull
+ * Requests view's Refresh button; slower than {@link listPullRequests} by
+ * design, and it surfaces rate-limit and auth failures rather than falling
+ * back to stale data silently.
+ */
+export function refreshPullRequests(args?: {
+  accountId?: string;
+  state?: PrState;
+}): Promise<PullRequestSummary[]> {
+  return invoke<PullRequestSummary[]>("prs_refresh", {
     accountId: args?.accountId,
     state: args?.state,
   });

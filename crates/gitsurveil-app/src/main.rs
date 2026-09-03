@@ -87,6 +87,7 @@ fn main() {
             commands::pr_branches,
             commands::pr_labels,
             commands::prs_list,
+            commands::prs_refresh,
             commands::apps_list,
             commands::apps_add,
             commands::apps_remove,
@@ -833,7 +834,7 @@ mod commands {
 
     /// Rows for the Pull Requests view (`specs/desktop-ui.md`). `state` is
     /// `open`/`closed`/`merged` or `None` for all; it re-queries the daemon
-    /// because it changes the GraphQL search qualifier.
+    /// because the daemon applies that filter against the stored table.
     #[tauri::command]
     pub async fn prs_list(
         account_id: Option<String>,
@@ -841,6 +842,22 @@ mod commands {
     ) -> Result<serde_json::Value, String> {
         crate::daemon::pr_call(
             "prs.list",
+            serde_json::json!({ "account_id": account_id, "state": state }),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// Forces a pull-request sync and returns the refreshed rows — the Pull
+    /// Requests view's Refresh button. Slower than `prs_list` by design: it
+    /// makes GitHub round trips instead of reading the stored table.
+    #[tauri::command]
+    pub async fn prs_refresh(
+        account_id: Option<String>,
+        state: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        crate::daemon::pr_call(
+            "prs.refresh",
             serde_json::json!({ "account_id": account_id, "state": state }),
         )
         .await

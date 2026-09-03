@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { listPullRequests, openUrl, reposList } from "../../ipc";
+import { listPullRequests, refreshPullRequests, openUrl, reposList } from "../../ipc";
 import { useDebouncedCallback } from "../../hooks/useDebouncedCallback";
 import { copyText } from "../clipboard";
 import { ContextMenu } from "../ContextMenu";
@@ -122,13 +122,17 @@ export function PullRequests({
     y: number;
   } | null>(null);
 
-  const load = useCallback(async (state: PrState | "") => {
+  /** Loads the rows. `sync` forces a GitHub round trip (the Refresh button);
+   *  the default reads the daemon's stored table, which returns instantly and
+   *  works with no network. */
+  const load = useCallback(async (state: PrState | "", sync = false) => {
     setBusy(true);
     try {
       // Repos ride along so "Resolve conflicts" can tell, before opening the
       // resolver, whether a local clone exists for that repository.
+      const query = sync ? refreshPullRequests : listPullRequests;
       const [fetched, catalog] = await Promise.all([
-        listPullRequests({
+        query({
           state: state === "" ? undefined : state,
         }),
         reposList(),
@@ -143,7 +147,7 @@ export function PullRequests({
     }
   }, []);
 
-  // Re-query when status changes — it alters the GraphQL qualifier. Account,
+  // Re-query when status changes — the daemon applies it in SQL. Account,
   // repository, role, attention, and search never reach the daemon.
   useEffect(() => {
     void load(status);
@@ -239,6 +243,18 @@ export function PullRequests({
               })),
             ]}
           />
+
+          {/* The list itself comes from the daemon's stored table, which the
+              poller keeps current in the background; this is for when you
+              can't wait for the next sync. */}
+          <button
+            type="button"
+            onClick={() => void load(status, true)}
+            disabled={busy}
+            className="rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-neutral-700"
+          >
+            {busy ? "Refreshing…" : "Refresh"}
+          </button>
         </header>
 
         <div className="flex-1 overflow-y-auto">

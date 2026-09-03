@@ -3,7 +3,7 @@
 //! Implements `status`, `items.{list,history,clear_history,dismiss,undismiss}`,
 //! `accounts.{add,list,remove}`, `rules.list`, `repos.{list,set,remove,new,
 //! ack_new,refresh,clone,clone_status,worktrees,worktree_add,worktree_remove}`,
-//! `conflicts.*`, `pr.*`, `prs.list`, `apps.{list,add,remove,open}`, and
+//! `conflicts.*`, `pr.*`, `prs.{list,refresh}`, `apps.{list,add,remove,open}`, and
 //! `poll.now`. Later phases add more `match` arms to [`dispatch`] without
 //! touching the transport code.
 
@@ -296,7 +296,8 @@ async fn dispatch(state: &ServerState, req: Request) -> Response {
         "pr.resolve" => handle_pr(state, req.params, PrAction::Resolve).await,
         "pr.branches" => handle_pr(state, req.params, PrAction::Branches).await,
         "pr.labels" => handle_pr(state, req.params, PrAction::Labels).await,
-        "prs.list" => handle_prs_list(state, req.params).await,
+        "prs.list" => handle_prs_list(state, req.params),
+        "prs.refresh" => handle_prs_refresh(state, req.params).await,
         "apps.list" => handle_apps_list(state),
         "apps.add" => handle_apps_add(state, req.params),
         "apps.remove" => handle_apps_remove(state, req.params),
@@ -451,45 +452,73 @@ async fn handle_pr(
 
 /// `prs.list` — the Pull Requests view's data source.
 ///
-/// A live query: one GraphQL request per configured account, concatenated.
-/// Never stored, never polled on a timer — the cost is bounded to a view
-/// open or a status refilter. See `specs/desktop-ui.md` for the filter
-/// contract (only `state` is a daemon-side qualifier; everything else is
-/// client-side).
-async fn handle_prs_list(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
-    let params: PrsListParams = if params.is_null() {
-        PrsListParams { account_id: None, state: None }
-    } else {
-        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))?
-    };
+/// Reads the `pull_requests` table the poller keeps in step with GitHub
+/// (`crate::prs`), so the view opens instantly and works with no network.
+/// It was a live GraphQL query until PRs gained a table; `prs.refresh` is
+/// now the way to force a round trip. See `specs/desktop-ui.md` for the
+/// filter contract (only `state` is a daemon-side qualifier; everything else
+/// is client-side).
+fn handle_prs_list(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
+    let params = parse_prs_list_params(params)?;
 
+    // Resolving the account first keeps the "unknown account" error the live
+    // query used to return, rather than silently listing nothing.
     let accounts = state.store.list_accounts()?;
-    let accounts: Vec<&AccountRef> = match &params.account_id {
-        Some(id) => vec![accounts
-            .iter()
-            .find(|a| &a.id == id)
-            .ok_or_else(|| DaemonError::UnknownAccount(id.clone()))?],
-        None => accounts.iter().collect(),
-    };
-    if accounts.is_empty() {
-        return Ok(serde_json::json!([]));
+    if let Some(id) = &params.account_id {
+        if !accounts.iter().any(|a| &a.id == id) {
+            return Err(DaemonError::UnknownAccount(id.clone()));
+        }
     }
 
-    let mut summaries: Vec<PullRequestSummary> = Vec::new();
-    for account in accounts {
-        let token = keychain::get_token(&account.id)?
-            .ok_or_else(|| DaemonError::UnknownAccount(account.id.clone()))?;
-        let client = GitHubClient::new(&account.id, &account.api_base, &token)?;
-        let muted = state.store.muted_repos(&account.id)?;
-        summaries.extend(
-            client
-                .list_pull_requests(params.state)
-                .await?
-                .into_iter()
-                .filter(|pr| !muted.contains(&pr.repo)),
-        );
+    let summaries = state
+        .store
+        .list_pull_requests(params.account_id.as_deref(), params.state)?;
+
+    // Muting is per-account, so build the set once per account rather than
+    // per row.
+    let mut muted_by_account: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    let mut visible: Vec<PullRequestSummary> = Vec::new();
+    for pr in summaries {
+        let muted = match muted_by_account.get(&pr.account_id) {
+            Some(m) => m,
+            None => {
+                let m = state.store.muted_repos(&pr.account_id)?;
+                muted_by_account.entry(pr.account_id.clone()).or_insert(m)
+            }
+        };
+        if !muted.contains(&pr.repo) {
+            visible.push(pr);
+        }
     }
-    Ok(serde_json::to_value(summaries).expect("Vec<PullRequestSummary> always serializes"))
+    Ok(serde_json::to_value(visible).expect("Vec<PullRequestSummary> always serializes"))
+}
+
+/// `prs.refresh` — forces a sync now, ignoring the poller's throttle, then
+/// returns the same payload as `prs.list`.
+///
+/// The Pull Requests view's Refresh button. Unlike the scheduled sync this
+/// surfaces failures to the caller: the user asked for a round trip, so a
+/// rate limit or an expired token has to be visible rather than swallowed.
+async fn handle_prs_refresh(
+    state: &ServerState,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let list_params = params.clone();
+    // Validate before spending a GitHub round trip on a malformed request.
+    parse_prs_list_params(params)?;
+    crate::prs::sync_all(&state.store).await?;
+    handle_prs_list(state, list_params)
+}
+
+/// Shared parameter parsing for `prs.list` and `prs.refresh`; both accept a
+/// null params object meaning "every account, every state".
+fn parse_prs_list_params(params: serde_json::Value) -> Result<PrsListParams> {
+    if params.is_null() {
+        Ok(PrsListParams { account_id: None, state: None })
+    } else {
+        serde_json::from_value(params).map_err(|e| DaemonError::InvalidParams(e.to_string()))
+    }
 }
 
 fn handle_items_history(state: &ServerState, params: serde_json::Value) -> Result<serde_json::Value> {
@@ -2462,5 +2491,75 @@ mod tests {
             // reveal it's missing, and we don't wait on the detached child.
             assert!(missing.error.is_none(), "cmd /C spawns successfully");
         }
+    }
+
+    /// A stored PR row for `acme/api`, the repo `seed_catalog` registers.
+    fn stored_pr(
+        number: u64,
+        state: gitsurveil_proto::PrState,
+        head_ref: &str,
+    ) -> PullRequestSummary {
+        PullRequestSummary {
+            account_id: "acc-1".into(),
+            repo: "acme/api".into(),
+            number,
+            title: format!("PR {number}"),
+            url: format!("https://github.com/acme/api/pull/{number}"),
+            author: "octocat".into(),
+            roles: vec![gitsurveil_proto::PrRole::Authored],
+            state,
+            draft: false,
+            ci_status: gitsurveil_proto::CiStatus::Passing,
+            review_decision: gitsurveil_proto::ReviewDecision::Approved,
+            unresolved_threads: 0,
+            mergeable: gitsurveil_proto::Mergeability::Clean,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-02T00:00:00Z".into(),
+            head_ref: Some(head_ref.into()),
+        }
+    }
+
+    /// `prs.list` reads the stored table rather than GitHub — the test has no
+    /// token and no network, so a live query could not pass this at all.
+    #[tokio::test]
+    async fn prs_list_reads_the_store_and_honours_the_mute_filter() {
+        let state = test_state();
+        seed_catalog(&state.store);
+        state
+            .store
+            .upsert_pull_requests(
+                &[
+                    stored_pr(1, gitsurveil_proto::PrState::Open, "feat/a"),
+                    stored_pr(2, gitsurveil_proto::PrState::Merged, "feat/b"),
+                ],
+                "t1",
+            )
+            .unwrap();
+
+        let list = |id: u64, params: serde_json::Value| {
+            let state = &state;
+            async move {
+                dispatch(state, Request { id, method: "prs.list".into(), params }).await
+            }
+        };
+
+        let resp = list(40, serde_json::Value::Null).await;
+        assert_eq!(resp.result.unwrap().as_array().unwrap().len(), 2);
+
+        let resp = list(41, serde_json::json!({ "state": "merged" })).await;
+        let merged = resp.result.unwrap();
+        assert_eq!(merged.as_array().unwrap().len(), 1);
+        assert_eq!(merged[0]["number"], 2);
+
+        // Muting the repo hides its PRs, exactly as the live query did.
+        state
+            .store
+            .set_notify_enabled("acc-1", "acme/api", false)
+            .unwrap();
+        let resp = list(42, serde_json::Value::Null).await;
+        assert!(resp.result.unwrap().as_array().unwrap().is_empty());
+
+        let resp = list(43, serde_json::json!({ "account_id": "nope" })).await;
+        assert_eq!(resp.error.unwrap().code, "unknown_account");
     }
 }

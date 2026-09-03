@@ -384,6 +384,10 @@ export interface PullRequestSummary {
   created_at: string;
   /** ISO-8601 last-update time. */
   updated_at: string;
+  /** The PR's head branch, when GitHub reported one. Ties a PR to a local
+   *  branch — the Repositories pane matches it against a worktree's
+   *  checked-out branch to mark the worktree as merged. */
+  head_ref?: string | null;
 }
 
 /**
