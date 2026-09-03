@@ -26,5 +26,8 @@ pub use pr::{
     PullRequestSummary, ReviewDecision, ReviewThread, Reviewer,
 };
 pub use priority::{ScoredItem, Severity};
-pub use repo::{CloneState, CloneStatus, OrgRef, RepoCatalog, Repository, WorktreeInfo, WorktreesResult};
+pub use repo::{
+    CloneState, CloneStatus, MergedPrRef, OrgRef, RepoCatalog, Repository, WorktreeInfo,
+    WorktreesResult,
+};
 pub use rpc::{ErrorPayload, Request, Response, StatusResult};

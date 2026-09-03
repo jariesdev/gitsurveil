@@ -114,6 +114,26 @@ pub struct WorktreeInfo {
     pub branch: String,
     /// Short commit id of the worktree's HEAD.
     pub head: String,
+    /// The merged pull request whose head branch this worktree still has
+    /// checked out, when one is known. [`None`] covers both "the branch has
+    /// no merged PR" and "no PRs have been synced for this repo yet", so the
+    /// UI treats it purely as an informational marker — never as grounds to
+    /// remove anything on its own.
+    pub merged_pr: Option<MergedPrRef>,
+}
+
+/// The merged pull request behind a worktree's "Merged" marker.
+///
+/// Only the fields the chip needs: enough to label it and to open the PR.
+/// The full row lives in the Pull Requests view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergedPrRef {
+    /// PR number, shown on the chip.
+    pub number: u64,
+    /// PR title, shown as the chip's tooltip.
+    pub title: String,
+    /// Link to the PR on GitHub.
+    pub url: String,
 }
 
 /// Everything the Repositories pane needs to render one repo's worktrees:

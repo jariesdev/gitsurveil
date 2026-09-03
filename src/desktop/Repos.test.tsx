@@ -165,6 +165,46 @@ describe("Repos", () => {
     }
   });
 
+  /** AC: a worktree whose branch belongs to a merged PR is marked, so the
+   *  user can decide whether to keep it. The chip is informational — it must
+   *  never remove anything by itself. */
+  it("marks a worktree whose branch has a merged pull request", async () => {
+    vi.mocked(reposWorktrees).mockResolvedValue({
+      worktrees: [
+        {
+          name: "wt-acme-web-feature",
+          path: "/tmp/acme/web/wt-feature",
+          branch: "feature",
+          head: "abc1234",
+          merged_pr: {
+            number: 482,
+            title: "Add rate limits",
+            url: "https://github.com/acme/web/pull/482",
+          },
+        },
+        {
+          name: "wt-acme-web-wip",
+          path: "/tmp/acme/web/wt-wip",
+          branch: "wip",
+          head: "def5678",
+        },
+      ],
+      branches: ["main", "feature", "wip"],
+    });
+    render(<Repos catalog={catalog} accounts={[account]} onChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees for acme/web" }));
+
+    const chip = await screen.findByTitle("Merged in #482: Add rate limits");
+    expect(chip.textContent).toContain("Merged #482");
+    // Exactly one chip: the unmerged worktree must not get one.
+    expect(screen.getAllByText(/^Merged #/)).toHaveLength(1);
+
+    fireEvent.click(chip);
+    expect(openUrl).toHaveBeenCalledWith("https://github.com/acme/web/pull/482");
+    // Nothing was removed — the chip only opens the PR.
+    expect(reposWorktreeRemove).not.toHaveBeenCalled();
+  });
+
   it("shows a Force delete button when worktree delete fails with dirty error", async () => {
     const worktrees: WorktreesResult = {
       worktrees: [

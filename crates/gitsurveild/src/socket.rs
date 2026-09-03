@@ -1059,6 +1059,11 @@ fn tracked_clone_path(state: &ServerState, repo: &str) -> Result<std::path::Path
 /// `repos.worktrees` — a repo's user-created worktrees plus the branches a new
 /// one can be created from. Derived from the clone's git metadata on every
 /// call, so worktrees made or removed outside gitsurveil show up too.
+///
+/// Each worktree is then matched against the stored merged PRs by head
+/// branch, so the pane can mark a worktree whose work has already landed.
+/// That match is a local SQLite join — no GitHub call — which is what keeps
+/// this handler instant and usable offline.
 async fn handle_repos_worktrees(
     state: &ServerState,
     params: serde_json::Value,
@@ -1072,8 +1077,15 @@ async fn handle_repos_worktrees(
         )));
     }
     let clone_path = tracked_clone_path(state, &params.repo)?;
-    let result =
+    let mut result =
         run_git_op(move || crate::worktrees::list(&clone_path)).await?;
+    // A detached worktree's branch is the literal "(detached)", which can
+    // never equal a head branch name, so it falls through unmarked with no
+    // special case.
+    let merged = state.store.merged_prs_by_head(&params.repo)?;
+    for worktree in &mut result.worktrees {
+        worktree.merged_pr = merged.get(&worktree.branch).cloned();
+    }
     Ok(serde_json::to_value(result).expect("WorktreesResult always serializes"))
 }
 
@@ -2289,7 +2301,26 @@ mod tests {
         )
         .await;
         assert!(resp.error.is_none(), "add failed: {:?}", resp.error);
-        assert_eq!(resp.result.unwrap()["branch"], "feature");
+        let added = resp.result.unwrap();
+        assert_eq!(added["branch"], "feature");
+        assert!(
+            added["merged_pr"].is_null(),
+            "a freshly created worktree is never merged"
+        );
+
+        // A merged PR on this worktree's branch, plus two rows that must not
+        // match: an open PR on the same branch and a merged PR on another.
+        state
+            .store
+            .upsert_pull_requests(
+                &[
+                    stored_pr(7, gitsurveil_proto::PrState::Merged, "feature"),
+                    stored_pr(8, gitsurveil_proto::PrState::Open, "feature"),
+                    stored_pr(9, gitsurveil_proto::PrState::Merged, "other"),
+                ],
+                "t1",
+            )
+            .unwrap();
 
         let resp = dispatch(
             &state,
@@ -2303,6 +2334,9 @@ mod tests {
         let worktrees = resp.result.unwrap()["worktrees"].as_array().unwrap().clone();
         assert_eq!(worktrees.len(), 1);
         assert_eq!(worktrees[0]["name"], "wt-acme-api-feature");
+        // AC: a worktree on a merged PR's head branch is marked, and the
+        // marker names that PR rather than the open one on the same branch.
+        assert_eq!(worktrees[0]["merged_pr"]["number"], 7);
 
         let resp = dispatch(
             &state,

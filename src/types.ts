@@ -241,6 +241,18 @@ export interface WorktreeInfo {
   branch: string;
   /** Short (7-char) head commit id, empty when the head is unreadable. */
   head: string;
+  /** The merged PR whose head branch this worktree still has checked out,
+   *  when one is known. Absent covers both "no merged PR" and "PRs have
+   *  never been synced for this repo", so it is an informational marker
+   *  only — never grounds to remove anything on its own. */
+  merged_pr?: MergedPrRef | null;
+}
+
+/** The merged pull request behind a worktree's "Merged" chip. */
+export interface MergedPrRef {
+  number: number;
+  title: string;
+  url: string;
 }
 
 /**

@@ -286,7 +286,11 @@ opens the full window:
   them): pick an existing branch or type a new one, and the daemon creates
   `wt-{owner}-{name}-{branch}` next to the clone. Right-click a worktree to
   **Open with…** a registered app (the daemon runs `command <path>`) or to
-  delete it — deleting removes its directory but keeps its branch.
+  delete it — deleting removes its directory but keeps its branch. A worktree
+  whose branch belongs to a pull request that has already been merged is
+  marked **Merged #N**; click the marker to open that PR. It is purely
+  informational — nothing is ever removed for you — so you can decide whether
+  the worktree is still worth keeping.
 - **Settings** — a notification-kind checklist (review requested, assigned,
   mentioned, participating, CI failed, changes requested, ready to merge,
   your PR has activity, a PR you reviewed has activity) checked by default;
@@ -373,7 +377,7 @@ echo '{"id":4,"method":"accounts.list","params":null}' | nc -U "$SOCK"
 | `repos.set` | Register an existing local clone as a repo's path (validated) |
 | `repos.set_notify` | Set whether a repo's items feed notifications and the Pull Requests view (independent of clone tracking) |
 | `repos.remove` | Forget a repo's clone path (does not delete files) |
-| `repos.worktrees` | A repo's user-created worktrees plus the branches a new one can use |
+| `repos.worktrees` | A repo's user-created worktrees plus the branches a new one can use; each worktree carries the merged PR for its branch, if any |
 | `repos.worktree_add` | Create a worktree (existing branch or a new one); nothing pre-existing is touched |
 | `repos.worktree_remove` | Remove a worktree and its directory; the branch survives |
 | `apps.list` | The registered "Open with…" applications |

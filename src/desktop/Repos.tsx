@@ -776,6 +776,26 @@ function WorktreesSection({
           className="flex cursor-default items-center gap-2 rounded px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800"
         >
           <span className="shrink-0 text-xs font-medium">{worktree.branch}</span>
+          {/* The branch's work has already landed, so this worktree is
+              probably disposable — informational only, the user decides.
+              Right-click → "Delete worktree" is still the only way to act. */}
+          {worktree.merged_pr && (
+            <button
+              type="button"
+              onClick={(event) => {
+                // The row is not itself clickable, but the panel around it
+                // is; opening the PR must not toggle anything.
+                event.stopPropagation();
+                void openUrl(worktree.merged_pr!.url);
+              }}
+              title={`Merged in #${worktree.merged_pr.number}: ${worktree.merged_pr.title}`}
+              className="shrink-0 cursor-pointer"
+            >
+              <Badge className="bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300">
+                Merged #{worktree.merged_pr.number}
+              </Badge>
+            </button>
+          )}
           <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-500">{worktree.path}</span>
           {worktree.head && (
             <span className="shrink-0 font-mono text-[11px] text-neutral-400">{worktree.head}</span>

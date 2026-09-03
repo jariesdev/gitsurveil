@@ -317,6 +317,9 @@ fn worktree_info(worktree: &git2::Worktree) -> Result<WorktreeInfo> {
         path: path.to_string_lossy().into_owned(),
         branch,
         head: head_id,
+        // This module is pure git — it has no store and must not grow one.
+        // `repos.worktrees` fills the merged marker in from the PR table.
+        merged_pr: None,
     })
 }
 
