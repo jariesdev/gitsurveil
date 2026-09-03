@@ -225,4 +225,9 @@ pub struct PullRequestSummary {
     pub created_at: String,
     /// ISO-8601 last-update time.
     pub updated_at: String,
+    /// The PR's head branch name (e.g. `feature/x`), when GitHub reported
+    /// one. This is what ties a PR to a local branch — the Repositories
+    /// pane matches it against a worktree's checked-out branch to mark the
+    /// worktree as merged.
+    pub head_ref: Option<String>,
 }

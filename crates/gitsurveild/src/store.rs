@@ -15,15 +15,16 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use gitsurveil_proto::{
-    AccountRef, ActionItem, AuthKind, CiStatus, CloneStatus, ItemKind, ItemState, OrgRef,
-    RegisteredApp, RepoCatalog, Repository,
+    AccountRef, ActionItem, AuthKind, CiStatus, CloneStatus, ItemKind, ItemState, MergedPrRef,
+    Mergeability, OrgRef, PrRole, PrState, PullRequestSummary, RegisteredApp, RepoCatalog,
+    Repository, ReviewDecision,
 };
 use rusqlite::{params, Connection};
 
 use crate::error::{DaemonError, Result};
 use crate::github::client::DiscoveredRepo;
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// The daemon's persistent state store.
 pub struct Store {
@@ -152,6 +153,36 @@ impl Store {
                 kind    TEXT PRIMARY KEY,
                 enabled INTEGER NOT NULL DEFAULT 1
             );
+            -- v8: the Pull Requests view used to be a live GraphQL query with
+            -- no storage. Persisting it is what makes the question -- has this
+            -- worktree's branch been merged? -- answerable without a network round trip on every
+            -- panel expand (`specs/desktop-ui.md`, Worktrees). Enum columns
+            -- hold the serde `snake_case` spelling so the proto types
+            -- round-trip through serde with no second mapping to keep in sync.
+            CREATE TABLE IF NOT EXISTS pull_requests (
+                account_id         TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                repo               TEXT NOT NULL,
+                number             INTEGER NOT NULL,
+                title              TEXT NOT NULL,
+                url                TEXT NOT NULL,
+                author             TEXT NOT NULL,
+                roles              TEXT NOT NULL DEFAULT '[]',
+                state              TEXT NOT NULL,
+                draft              INTEGER NOT NULL DEFAULT 0,
+                ci_status          TEXT NOT NULL,
+                review_decision    TEXT NOT NULL,
+                unresolved_threads INTEGER NOT NULL DEFAULT 0,
+                mergeable          TEXT NOT NULL,
+                created_at         TEXT NOT NULL,
+                updated_at         TEXT NOT NULL,
+                head_ref           TEXT,
+                synced_at          TEXT NOT NULL,
+                PRIMARY KEY (account_id, repo, number)
+            );
+            CREATE INDEX IF NOT EXISTS idx_prs_state ON pull_requests(state);
+            -- The index the worktree join reads; without it every panel expand
+            -- scans the whole table.
+            CREATE INDEX IF NOT EXISTS idx_prs_head ON pull_requests(repo, head_ref);
             ",
         )?;
         // v3: `clone_jobs.target_owned` records whether the daemon created the
@@ -1018,6 +1049,216 @@ impl Store {
         )?;
         Ok(())
     }
+
+    // ---- meta ----------------------------------------------------------
+
+    /// Reads a `meta` row, or [`None`] when the key was never written. The
+    /// table has held only `schema_version` until now; the PR sync uses it
+    /// for its watermark rather than adding a one-row table of its own.
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+            r.get(0)
+        })
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e.into()),
+        })
+    }
+
+    /// Writes a `meta` row, replacing any previous value.
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    // ---- pull requests ---------------------------------------------------
+
+    /// Inserts or replaces PR rows, stamping every one with `synced_at`.
+    ///
+    /// One transaction, so a partial sync never leaves the table half-updated.
+    /// `synced_at` is the caller's cycle timestamp rather than "now" per row:
+    /// [`drop_stale_open_prs`](Self::drop_stale_open_prs) uses it to tell rows
+    /// this sync saw from rows it didn't.
+    pub fn upsert_pull_requests(&self, prs: &[PullRequestSummary], synced_at: &str) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO pull_requests (
+                    account_id, repo, number, title, url, author, roles, state, draft,
+                    ci_status, review_decision, unresolved_threads, mergeable,
+                    created_at, updated_at, head_ref, synced_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            )?;
+            for pr in prs {
+                stmt.execute(params![
+                    pr.account_id,
+                    pr.repo,
+                    pr.number as i64,
+                    pr.title,
+                    pr.url,
+                    pr.author,
+                    serde_json::to_string(&pr.roles).unwrap_or_else(|_| "[]".into()),
+                    enum_to_str(&pr.state),
+                    pr.draft as i64,
+                    enum_to_str(&pr.ci_status),
+                    enum_to_str(&pr.review_decision),
+                    pr.unresolved_threads as i64,
+                    enum_to_str(&pr.mergeable),
+                    pr.created_at,
+                    pr.updated_at,
+                    pr.head_ref,
+                    synced_at,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The stored PRs for the Pull Requests view, most recently updated first.
+    /// `account_id`/`state` are both optional narrowings, matching `prs.list`.
+    pub fn list_pull_requests(
+        &self,
+        account_id: Option<&str>,
+        state: Option<PrState>,
+    ) -> Result<Vec<PullRequestSummary>> {
+        let conn = self.conn.lock().unwrap();
+        let state = state.map(|s| enum_to_str(&s));
+        // Both filters are optional, so bind them as "NULL means no filter"
+        // rather than building the SQL by concatenation.
+        let mut stmt = conn.prepare(
+            "SELECT account_id, repo, number, title, url, author, roles, state, draft,
+                    ci_status, review_decision, unresolved_threads, mergeable,
+                    created_at, updated_at, head_ref
+             FROM pull_requests
+             WHERE (?1 IS NULL OR account_id = ?1)
+               AND (?2 IS NULL OR state = ?2)
+             ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map(params![account_id, state], row_to_pull_request)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Merged PRs for `repo`, keyed by their head branch — the join behind the
+    /// Repositories pane's "Merged" chip.
+    ///
+    /// Keyed across every account, because a worktree belongs to a clone, not
+    /// to an account. When two merged PRs share a head branch (a branch reused
+    /// after an earlier merge) the highest number wins, since that is the most
+    /// recent merge.
+    pub fn merged_prs_by_head(
+        &self,
+        repo: &str,
+    ) -> Result<std::collections::HashMap<String, MergedPrRef>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT head_ref, number, title, url
+             FROM pull_requests
+             WHERE repo = ?1 AND state = 'merged' AND head_ref IS NOT NULL
+             ORDER BY number ASC",
+        )?;
+        let rows = stmt.query_map(params![repo], |row| {
+            let head: String = row.get(0)?;
+            let number: i64 = row.get(1)?;
+            Ok((
+                head,
+                MergedPrRef {
+                    number: number as u64,
+                    title: row.get(2)?,
+                    url: row.get(3)?,
+                },
+            ))
+        })?;
+        // Ascending order means the highest number is inserted last and wins.
+        rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()
+            .map_err(Into::into)
+    }
+
+    /// Deletes rows still marked `open` that the sync at `synced_at` did not
+    /// see, and returns how many went.
+    ///
+    /// A PR that leaves the open set has either been merged or closed — in
+    /// which case the same sync's merged/closed pass already corrected it —
+    /// or has fallen outside what search returns for this user. Either way the
+    /// stale row must go, so the view never shows a PR as open when it isn't.
+    pub fn drop_stale_open_prs(&self, account_id: &str, synced_at: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "DELETE FROM pull_requests
+             WHERE account_id = ?1 AND state = 'open' AND synced_at < ?2",
+            params![account_id, synced_at],
+        )?;
+        Ok(n)
+    }
+
+    /// Drops settled (merged/closed) PRs last updated before `cutoff`, and
+    /// returns how many went. Open rows are never pruned by age — they leave
+    /// only via [`drop_stale_open_prs`](Self::drop_stale_open_prs) — so an
+    /// abandoned long-lived PR can't vanish from the view while still open.
+    pub fn prune_pull_requests(&self, cutoff: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "DELETE FROM pull_requests WHERE state != 'open' AND updated_at < ?1",
+            params![cutoff],
+        )?;
+        Ok(n)
+    }
+}
+
+/// Serializes a `#[serde(rename_all = "snake_case")]` proto enum to the string
+/// stored in SQLite. Going through serde keeps the column spelling and the
+/// wire spelling the same value by construction, so no second mapping can
+/// drift out of sync with the proto.
+fn enum_to_str<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Inverse of [`enum_to_str`], falling back to `fallback` for a value written
+/// by a future version (or corrupted). A stored row must never fail a whole
+/// listing over one unrecognized enum.
+fn enum_from_str<T: serde::de::DeserializeOwned>(s: &str, fallback: T) -> T {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).unwrap_or(fallback)
+}
+
+fn row_to_pull_request(row: &rusqlite::Row) -> rusqlite::Result<PullRequestSummary> {
+    let roles: String = row.get(6)?;
+    let state: String = row.get(7)?;
+    let ci_status: String = row.get(9)?;
+    let review_decision: String = row.get(10)?;
+    let mergeable: String = row.get(12)?;
+    let number: i64 = row.get(2)?;
+    let draft: i64 = row.get(8)?;
+    let unresolved_threads: i64 = row.get(11)?;
+    Ok(PullRequestSummary {
+        account_id: row.get(0)?,
+        repo: row.get(1)?,
+        number: number as u64,
+        title: row.get(3)?,
+        url: row.get(4)?,
+        author: row.get(5)?,
+        roles: serde_json::from_str::<Vec<PrRole>>(&roles).unwrap_or_default(),
+        state: enum_from_str(&state, PrState::Open),
+        draft: draft != 0,
+        ci_status: enum_from_str(&ci_status, CiStatus::None),
+        review_decision: enum_from_str(&review_decision, ReviewDecision::None),
+        unresolved_threads: unresolved_threads as u64,
+        mergeable: enum_from_str(&mergeable, Mergeability::Unknown),
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        head_ref: row.get(15)?,
+    })
 }
 
 fn row_to_repository(row: &rusqlite::Row) -> rusqlite::Result<Repository> {
@@ -1723,5 +1964,165 @@ mod tests {
         assert!(store.remove_app("code").unwrap());
         assert!(!store.remove_app("code").unwrap()); // idempotent
         assert_eq!(store.list_apps().unwrap().len(), 1);
+    }
+
+    // ---- pull requests -------------------------------------------------
+
+    fn sample_pr(number: u64, state: PrState, head_ref: Option<&str>) -> PullRequestSummary {
+        PullRequestSummary {
+            account_id: "acc-1".into(),
+            repo: "acme/api".into(),
+            number,
+            title: format!("PR {number}"),
+            url: format!("https://github.com/acme/api/pull/{number}"),
+            author: "octocat".into(),
+            roles: vec![PrRole::Authored],
+            state,
+            draft: false,
+            ci_status: CiStatus::Passing,
+            review_decision: ReviewDecision::Approved,
+            unresolved_threads: 2,
+            mergeable: Mergeability::Clean,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: format!("2026-01-0{}T00:00:00Z", number.min(9)),
+            head_ref: head_ref.map(str::to_owned),
+        }
+    }
+
+    fn store_with_account() -> Store {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_account(&sample_account()).unwrap();
+        store
+    }
+
+    /// Every field must survive the SQLite round-trip — the enum and role
+    /// columns go through serde, so a rename in the proto would silently
+    /// change what is stored if this stopped checking equality.
+    #[test]
+    fn pull_requests_round_trip_through_the_store() {
+        let store = store_with_account();
+        let pr = sample_pr(1, PrState::Open, Some("feat/login"));
+        store.upsert_pull_requests(&[pr.clone()], "t1").unwrap();
+
+        let listed = store.list_pull_requests(None, None).unwrap();
+        assert_eq!(listed, vec![pr.clone()]);
+
+        // Re-syncing the same PR updates it in place rather than duplicating.
+        let mut updated = pr.clone();
+        updated.title = "renamed".into();
+        store.upsert_pull_requests(&[updated.clone()], "t2").unwrap();
+        assert_eq!(store.list_pull_requests(None, None).unwrap(), vec![updated]);
+    }
+
+    #[test]
+    fn listing_pull_requests_filters_by_account_and_state() {
+        let store = store_with_account();
+        store
+            .upsert_pull_requests(
+                &[
+                    sample_pr(1, PrState::Open, Some("feat/a")),
+                    sample_pr(2, PrState::Merged, Some("feat/b")),
+                ],
+                "t1",
+            )
+            .unwrap();
+
+        let open = store.list_pull_requests(None, Some(PrState::Open)).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].number, 1);
+
+        assert_eq!(store.list_pull_requests(Some("acc-1"), None).unwrap().len(), 2);
+        assert!(store.list_pull_requests(Some("acc-2"), None).unwrap().is_empty());
+    }
+
+    /// The worktree join: keyed by head branch, merged only, most recent
+    /// merge winning when a branch was reused.
+    #[test]
+    fn merged_prs_are_keyed_by_head_branch() {
+        let store = store_with_account();
+        store
+            .upsert_pull_requests(
+                &[
+                    sample_pr(1, PrState::Merged, Some("feat/login")),
+                    sample_pr(2, PrState::Open, Some("feat/open")),
+                    sample_pr(3, PrState::Closed, Some("feat/abandoned")),
+                    // Same branch merged twice; the later PR wins.
+                    sample_pr(4, PrState::Merged, Some("feat/login")),
+                    // No head branch at all — must not panic or key on NULL.
+                    sample_pr(5, PrState::Merged, None),
+                ],
+                "t1",
+            )
+            .unwrap();
+
+        let merged = store.merged_prs_by_head("acme/api").unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged["feat/login"].number, 4);
+        assert!(!merged.contains_key("feat/open"));
+        assert!(!merged.contains_key("feat/abandoned"));
+
+        assert!(store.merged_prs_by_head("acme/other").unwrap().is_empty());
+    }
+
+    /// A PR that left the open set between syncs must not linger as open.
+    #[test]
+    fn stale_open_prs_are_dropped_but_settled_ones_are_kept() {
+        let store = store_with_account();
+        store
+            .upsert_pull_requests(
+                &[
+                    sample_pr(1, PrState::Open, Some("feat/a")),
+                    sample_pr(2, PrState::Open, Some("feat/b")),
+                    sample_pr(3, PrState::Merged, Some("feat/c")),
+                ],
+                "t1",
+            )
+            .unwrap();
+
+        // Second sync sees only #1; #2 vanished, #3 is settled so untouched.
+        store
+            .upsert_pull_requests(&[sample_pr(1, PrState::Open, Some("feat/a"))], "t2")
+            .unwrap();
+        assert_eq!(store.drop_stale_open_prs("acc-1", "t2").unwrap(), 1);
+
+        let numbers: Vec<u64> = store
+            .list_pull_requests(None, None)
+            .unwrap()
+            .iter()
+            .map(|p| p.number)
+            .collect();
+        assert_eq!(numbers.len(), 2);
+        assert!(numbers.contains(&1) && numbers.contains(&3));
+    }
+
+    #[test]
+    fn pruning_removes_old_settled_prs_only() {
+        let store = store_with_account();
+        let mut old_open = sample_pr(1, PrState::Open, None);
+        old_open.updated_at = "2020-01-01T00:00:00Z".into();
+        let mut old_merged = sample_pr(2, PrState::Merged, None);
+        old_merged.updated_at = "2020-01-01T00:00:00Z".into();
+        store
+            .upsert_pull_requests(&[old_open, old_merged, sample_pr(3, PrState::Merged, None)], "t1")
+            .unwrap();
+
+        assert_eq!(store.prune_pull_requests("2025-01-01T00:00:00Z").unwrap(), 1);
+        let numbers: Vec<u64> = store
+            .list_pull_requests(None, None)
+            .unwrap()
+            .iter()
+            .map(|p| p.number)
+            .collect();
+        assert!(numbers.contains(&1), "an open PR must survive pruning by age");
+        assert!(numbers.contains(&3));
+    }
+
+    #[test]
+    fn meta_values_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.get_meta("prs_synced_at").unwrap().is_none());
+        store.set_meta("prs_synced_at", "t1").unwrap();
+        store.set_meta("prs_synced_at", "t2").unwrap();
+        assert_eq!(store.get_meta("prs_synced_at").unwrap().as_deref(), Some("t2"));
     }
 }

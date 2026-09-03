@@ -341,6 +341,7 @@ impl GitHubClient {
 }}
 fragment prFields on PullRequest {{
   __typename number title url createdAt updatedAt state isDraft reviewDecision mergeable
+  headRefName
   author {{ login }} repository {{ nameWithOwner }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
   reviewThreads(first: 100) {{ nodes {{ isResolved }} }}
@@ -743,6 +744,10 @@ struct SearchPrNode {
     #[serde(rename = "reviewDecision")]
     review_decision: Option<String>,
     mergeable: Option<String>,
+    /// The PR's head branch. Absent only if GitHub omits it, which it does
+    /// not in practice for PullRequest nodes — hence `Option`, not a panic.
+    #[serde(default, rename = "headRefName")]
+    head_ref: Option<String>,
     author: Option<SearchAuthor>,
     repository: SearchRepository,
     commits: SearchCommits,
@@ -854,6 +859,7 @@ impl SearchPrNode {
             },
             created_at: self.created_at,
             updated_at: self.updated_at,
+            head_ref: self.head_ref,
         }
     }
 }
@@ -949,6 +955,7 @@ mod tests {
             is_draft: false,
             review_decision: Some("APPROVED".into()),
             mergeable: Some("MERGEABLE".into()),
+            head_ref: Some(format!("feature/{number}")),
             author: Some(SearchAuthor { login: "octocat".into() }),
             repository: SearchRepository {
                 name_with_owner: repo.into(),
